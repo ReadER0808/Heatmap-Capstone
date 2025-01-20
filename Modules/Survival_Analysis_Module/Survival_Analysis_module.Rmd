@@ -1,0 +1,245 @@
+---
+title: "Survival_Analysis Module"
+author: "Heatmap Capstone Project Team"
+date: "2024-05-03"
+output: html_document
+---
+
+## Heatmap Capstone: Survival Analysis Module
+
+## Introduction
+
+This module is designed to generate hazard curves for all the token transitions which occur in the dataset and allows the user the option to model specific transitions. The aim is to provide insights into the structure of specific token to token transitions. There are three code blocks for execution. These are:
+
+1.  Library calls, dataset import and pre-processing for analysis.
+
+2.  Hazard curve generation.
+
+3.  Survival curve modelling.
+
+The .rmd format has been used to support the inclusion of explanatory text and the file is not intended for output to html.
+
+### Library calls
+
+The code block begins by loading necessary libraries for data manipulation, visualisation, and survival curve modelling (noting that a survival curve is roughly equivalent to one minus the hazard curve). These include `dplyr`, `tidyr`, `purrr`, `stringr`, `ggplot2`, and `flexsurv`.
+
+### Load dataset
+
+The code then reads a CSV file containing the dataset using the `read.csv()` function. The file path assumes that the CSV file is in the working directory and that the file is named as `mod_r_data.csv` for the modified original dataset file. This file name can be changed in code if necessary, but the requirement for the predefined CSV structure remains.
+
+If a custom file is used, it should follow a specific structure. The first column should contain IDs with the column name `UniqueID`. Subsequent columns from left to right should represent sequential periods, named numerically starting from 1. All tokens should be a single character and there be no more than around 20 tokens.
+
+For example, the structure should resemble:
+
+| UniqueID | 1   | 2   | 3   | ... |
+|----------|-----|-----|-----|-----|
+| id1      |     |     |     |     |
+| id2      |     |     |     |     |
+| ...      |     |     |     |     |
+
+The `header` parameter is set to `TRUE` to indicate that the first row contains column names, and `check.names` is set to `FALSE` to avoid column name validation.
+
+The dataset is then stored in the `dataset` variable for further analysis.
+
+### Pre-processing
+
+The following code block focuses on preprocessing the data to prepare it for further analysis:
+
+The imported data is read into `dataset` and a vector comprising unique tokens (`unique_tokens`) is created from `dataset`, and a new two column dataframe, `dataset_c` is created from `dataset` using the `UniqueID` from each row in the first column and the remaining columns concatentated by row using a space separator into the second column of `dataset_c`.
+
+Two functions are then developed. The first takes the concatenated token from the second column in `dataset_c` and generates a return comprising the two columns: token name and the length of that token. Note that there may be multiple instances of an individual token occurring in a contiguous sequence. Each of these contiguous token sequences would be captured. The second function function extracts this information from the output generated in the first function recording the length of a contiguous sequences of tokens (`Num_pre_Change`), the token itself (`From_Token`) and the token which was transitioned to (`To_Token`).
+
+These two function are then applied to `dataset_c` with a tibble as the final output from the second function (`T_Change_Cnt`).
+
+`T_Change_Cnt` is then grouped and summarised into `Token_chg_Summary` where the grouping is on `From_Token`,`To_Token` and `Num_pre_Change`, and then summarised on a count of distinct `Num_pre_Change`, creating the additional column `UNIQUE_COUNT`.
+
+The data contained in `Token_chg_Summary` supports easy plotting of hazard curves for all token transition combinations.
+
+```{r warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##########################################################
+#####Library calls, dataset import and pre-processing#####
+##########################################################
+
+### Library installation 
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(ggplot2)
+library(flexsurv)
+
+### Data set-up and preparation
+
+### Load dataset full data / concise data
+dataset <- read.csv("mod_r_data.csv", header = TRUE, check.names = FALSE)
+
+### Create a vector of the unique tokens in dataset 
+unique_tokens <- unique(as.vector(as.matrix(dataset[,2:ncol(dataset)])))
+
+### Create a new dataframe comprising two columns - the first column is the
+### UniqueID and the second column is a concatenation of the tokens across the 
+### remaining columns along each row with a space separator between tokens.
+dataset_c <- data.frame(UniqueID = dataset[,1],
+Combined_Sequence = apply(dataset[, -1], 1, function(row) paste(row, collapse = " ")))
+
+### Define a function to calculate consecutive token frequencies
+### Note that the rle function from base r counts consecutive tokens of the same
+### type.
+calculate_consecutive_token_frequencies <- function(sequence) {
+  tokens <- str_split(sequence, " ")[[1]]
+  rle_result <- rle(tokens)
+  token_freq <- setNames(rle_result$lengths, rle_result$values)
+  return(token_freq)
+}
+
+### Define a function to extract consecutive frequencies for each token
+extract_consecutive_frequencies <- function(token_freq) {
+  data <- tibble(
+    From_Token = names(token_freq)[-length(token_freq)],
+    To_Token = names(token_freq)[-1],
+    Num_pre_Change = unname(token_freq[-length(token_freq)])
+  )
+  return(data)
+}
+
+### Apply the function to the Combined_Sequence column
+T_Change_Cnt <- dataset_c %>%
+  mutate(Consecutive_Frequencies = map(Combined_Sequence, calculate_consecutive_token_frequencies)) %>%
+  mutate(Token_Data = map(Consecutive_Frequencies, extract_consecutive_frequencies)) %>%
+  unnest(Token_Data)
+T_Change_Cnt <- T_Change_Cnt[, !names(T_Change_Cnt) %in% c("Combined_Sequence", "Consecutive_Frequencies")]
+
+
+###Final dataframe for subsequent analysis 
+Token_chg_summary <- T_Change_Cnt %>% group_by(From_Token,To_Token, Num_pre_Change) %>% summarise(UNIQUE_COUNT = n_distinct(Num_pre_Change))
+
+###Our work is done for data preparation
+```
+
+## Hazard curve generation
+
+This step (code block below) plots hazard (transition) curves for every type of token transition (all `From_Token` to `To_Token` occurrences). The code loops over each unique type of `From_Token` within `Token_chg_Summary`, filters all instances of that `From_Token` from `Token_chg_Summary` and generates all hazard curves for the filtered `From_Token` to all tokens to which it transitions. The hazard curves represent a cumulative sum (on `UNIQUE_COUNT`) of transitions through sequence.
+
+The vertical axis in each plot records the cumulative number of transitions from the "from" token to each of the "to" tokens. The horizontal axis records the length in sequence by which those cumulative counts of tokens have transitioned.
+
+```{r, echo=FALSE}
+
+#################################
+#####Hazard curve generation#####
+#################################
+
+###Plotting hazard charts for all fro - to token combinations 
+  for(i in  1:length(unique_tokens)){ 
+
+###Filter for each from token  
+  select_from <- Token_chg_summary[Token_chg_summary$From_Token == unique_tokens[i], ]
+
+###Generating cumulative sum for to tokens through sequence
+  chartdata <- select_from %>%
+    group_by(To_Token) %>%
+    arrange(Num_pre_Change) %>%    # Just in case not ordered already
+    mutate(UNIQUE_COUNT_SUM = cumsum(UNIQUE_COUNT))
+
+###Plotting    
+  print(ggplot(chartdata, aes(Num_pre_Change, UNIQUE_COUNT_SUM, color = To_Token)) +
+    geom_line() + geom_point() + labs(x = "Length of from token before transition",
+      y = "Cumulative count of transitions from token - to token") + 
+      ggtitle(paste("Length/count of tokens prior to change: from token ",unique_tokens[i])) + 
+      labs(color='-> to token'))
+  
+  }
+
+```
+
+## Survival curve modelling
+
+This step (code block below) allows the user to model a specific hazard (transition) curve using a survival curve. On running the code block, the user is shown the unique existing tokens (from `unique_tokens`) within the dataset which can be selected as the "from" and "to"token. The user then enters the "from" token when prompted and then enters the "to" token when prompted. Prompts, and token entry, are via the console. It is noted that not all tokens transition to all other tokens. The dataset is filtered once the "from" token is selected so that only the available transitions are displayed fo the "to" token choice. A warning will be displayed if there are less five datapoints available as the fitted curves may either through an error or have no meaningful outcome.
+
+Once the "from" and "to" tokens are selected, the module then filters `T_Change_Cnt` for those tokens to generate the appropriate sub-dataset. Survival curves are then fitted. These are:
+
+-   Weibull,
+
+-   lognormal, and
+
+-   generalised gamma.
+
+In addition, the module also fits the Kaplan-Meier non-parametric curve. The AIC for each of the three fitted curves is, along with the parameters for the three fitted curves, and plots of the three fitted curves, the Kaplan-Meier curve and the 95% confidence intervals for the Kaplan-Meier curve.
+
+When fitting, the module will print the number of datapoints available. Too few datapoints will result in an error or a poor fit.
+
+```{r , echo=FALSE}
+
+##################################
+#####Survival curve modelling#####
+##################################
+
+### For user to generate specific from-to survival curves
+
+print("These are the unique FROM tokens which be selected for generating fitted survival curves.")
+
+unique_tokens
+
+### filter for from and then to 
+
+print("Please enter the FROM token:")
+FromToken <- readline()
+surv_data <- T_Change_Cnt[T_Change_Cnt$From_Token == FromToken, ]
+unique_to_tokens <- unique(as.vector(as.matrix(surv_data[,3])))
+
+print("These are the unique TO tokens which be selected for generating fitted survival curves using the selected FROM token.")
+
+unique_to_tokens
+
+print("Please enter the TO token:")
+ToToken <- readline()
+surv_data <- surv_data[surv_data$To_Token == ToToken, ]
+
+print(str_c("There are", nrow(surv_data),  "datapoints for fitting. Too few datapoints will result in either an error or a poor fit", sep = "  "))
+
+### Add a dummy target for fitting 
+surv_data$dummy <- 1
+
+### Fitting three survival curves
+fit.weibull <- flexsurvreg(formula = Surv(Num_pre_Change, dummy) ~ 1, data = surv_data, dist = "weibull")
+fit.ggama <- flexsurvreg(formula = Surv(Num_pre_Change, dummy) ~ 1, data = surv_data, dist = "gengamma")
+fit.lnorm <- flexsurvreg(formula = Surv(Num_pre_Change, dummy) ~ 1, data = surv_data, dist = "lognormal")
+
+### Generating AIC measures
+AIC_w <- AIC(fit.weibull)
+AIC_ln <- AIC(fit.lnorm)
+AIC_gg <- AIC(fit.ggama)
+
+AIC_table <- data.frame(matrix(ncol=2,nrow=0, dimnames=list(NULL, c("Model", "AIC"))))
+AIC_table[nrow(AIC_table) + 1,] <- list("Weibull", AIC_w)
+AIC_table[nrow(AIC_table) + 1,] <- list("Lognormal", AIC_ln)
+AIC_table[nrow(AIC_table) + 1,] <- list("Generalised Gamma", AIC_gg)
+
+### AIC output table
+knitr::kable(AIC_table, col.names = names(AIC_table), caption = "AIC by fitted curve type.")
+
+x_lab_name <- str_c("From", FromToken, "Token Length (Time) to", ToToken, sep = "  ")
+
+### Generating fitted survival curves,  including semi-parametric KM 
+plot(fit.weibull, col="coral", lwd.ci=0, lty.ci=0, ylab="Survival", xlab=x_lab_name, cex.lab = 1.0,cex.axis = 0.8)
+lines(fit.lnorm, col="lightblue", lwd.ci=0, lty.ci=0)
+lines(fit.ggama, col="pink", lwd.ci=0, lty.ci=0)
+legend("topright", legend = c("Weibull", "LogNormal", "Generalised Gamma", "KM"),
+       lty = 1, col = c("coral","lightblue","pink","black"))
+
+### Survival curve coefficients
+fit_gg <- fit.ggama$coefficients
+fit_w <- fit.weibull$coefficients
+fit_ln <- fit.lnorm$coefficients
+
+### Fitted curve parameters tables
+knitr::kable(fit_w, col.names = c("Parameter", "Value"), caption = "Weibull parameters.")
+
+knitr::kable(fit_ln, col.names = c("Parameter", "Value"), caption = "Lognormal parameters.")
+
+knitr::kable(fit_gg, col.names = c("Parameter", "Value"), caption = "Generalised gamma parameters.")
+
+
+```

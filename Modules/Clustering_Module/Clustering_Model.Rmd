@@ -1,0 +1,1276 @@
+---
+title: "Cluster_Model"
+output: html_document
+date: "2024-05-02"
+---
+
+### ClUSTERING MODULE FOR HEATMAP ANLAYSIS
+
+The goal of this module is to do cluster modelling, which includes making cluster plots and finding the ideal k value by using the elbow and silhouette approaches. It also produces summaries of the top five tokens or token transitions. The module provides three different clustering techniques for analysis, which allows for flexibility:
+
+1. K-Means Clustering
+2. Hierarchical Clustering
+3. Distribution-Based Clustering
+
+The analysis can be conducted on three different types of dataframes:
+
+1. Single token frequency
+2. Transitioning token frequency with soft transitions
+3. Transition token frequency without soft transitions
+
+Each section of the code block contains instructions preceding the code, for guidence purposes.
+
+***Note: The data set needs to be in the same structure as the mod_r_data dataset in order to work with the below code blocks.***
+
+
+#### Importing libraries and Dataset
+
+Libraries that are required are loaded in the first code block. Upon loading the necessary libraries, the code uses the readline() function to ask the user to input the directory path containing the dataset. The code uses the setwd() function to set the working directory to the directory path once it has been provided.
+
+Lastly, the code uses the read.csv() method to read the dataset from the designated directory and assigns it to the variable dataset. The dataset with the name "mod_r_data.csv" is presumed to be in CSV format. 
+
+```{r warning=FALSE}
+###########################################
+#####Importing libraries and Dataset#######
+###########################################
+
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(stats)
+library(cluster)
+library(pals)
+library(RColorBrewer)
+library(data.table)
+library(magick) 
+library(ComplexHeatmap)###from BioConductor
+
+
+#Provide the directory path when prompted
+dir_path <- readline(prompt = "Enter directory path: ")
+#Set the directory path entered 
+setwd(dir_path)
+# Load dataset
+dataset <- read.csv("mod_r_data.csv")#mod_r_dataset.csv
+
+```
+
+#### Preprocessing Datset and creating required Dataframes
+
+This code's goal is to preprocess and convert sequential data into a format that may be used for additional analysis, like clustering. It gathers insightful information regarding the tokens' occurrence and transition patterns inside the sequences, which can be applied to a variety of analytical uses.The tasks that are carried out using the code provided are as below:
+
+-   Combining Sequences: To get started, a new dataframe dataset_c is created, which then combines each of the       original dataset's separate sequences into a single combined sequence. All of the values in each row of the      dataset are concatenated to create this combined sequence, with the exception of the first column, which is      thought to be a unique identifier (UniqueID).
+
+-   Token Occurrences: To determine the frequency of each token in the combined sequences, the code defines the      function calculate_token_frequencies. The combined sequence is divided into separate tokens, and each token's     frequency is counted. A dataframe called token_df is then created, containing two columns called Token and       Count, which stand for the token and its frequency, respectively.
+
+-   Token Transitions: For calculating the frequency of transitions between tokens in the concatenated sequences,     the code defines a function called calculate_transition_frequencies. The concatenated sequence is divided        into individual tokens, and the frequency of transitions between tokens is determined. A dataframe called        transition_df is created, containing two columns, Transition and Count, which reflect the frequency of           transitions between tokens and the transition itself, respectively.
+
+-   Data Transformation: The code uses a map from the purrr package to apply the token frequency and transition      frequency functions to combined sequence in the dataset_c dataframe. The resultant dataframes are then           unnested, pivot_wider is used to convert them into wide format, and the necessary columns are chosen. The        token occurrence and token transition frequencies are found in the final dataframes, data_TO and data_TS,        respectively.
+
+-   The data_TS_wNA dataframe contains a modified version of the data_TS dataframe with the self-transition token     columns removed.
+
+-   Data Cleanup: In order to free up memory, the code uses the rm function to eliminate superfluous intermediary     dataframes (dataset_c, token_df, and transition_df).
+
+
+```{r}
+#################################################################
+#####Dataset pre-processing and creating required Dataframes#####
+#################################################################
+
+#Combine the columns into one column exclusing the UniqueToken column
+dataset_c <- data.frame(
+  UniqueID = dataset[,1],
+  Combined_Sequence = apply(dataset[, -1], 1, function(row) paste(row, collapse = " "))
+)
+
+# Function for calculating the Token Occurences 
+calculate_token_frequencies <- function(sequence) {
+  # Split the sequence into individual tokens
+  tokens <- strsplit(sequence, " ")[[1]]
+  # Count the frequency of each token
+  token_frequencies <- table(tokens)
+  # Create a dataframe with token frequencies
+  token_df <- data.frame(
+    Token = names(token_frequencies),
+    Count = as.numeric(token_frequencies),
+    stringsAsFactors = FALSE
+  )
+  return(token_df)
+}
+
+#Calling the above function
+token_df <- dataset_c %>%
+  mutate(Token_Frequencies = map(Combined_Sequence, calculate_token_frequencies)) %>%
+  unnest(Token_Frequencies) %>%  mutate(UniqueID = as.character(UniqueID))
+
+#Pivotting the dataframe from long to wide
+data_TO <- token_df %>% 
+  pivot_wider(names_from = Token, values_from = Count, values_fill = 0) %>%
+  select(-Combined_Sequence)
+
+
+# Function for counting the frequency of the Token Transitions
+calculate_transition_frequencies <- function(sequence) {
+  # Split the sequence into individual tokens
+  tokens <- strsplit(sequence, " ")[[1]]
+  # Initialize transition state frequencies
+  transition_frequencies <- table(paste(tokens[-length(tokens)], tokens[-1]))
+  # Create a dataframe with transition state frequencies
+  transition_df <- data.frame(
+    Transition = names(transition_frequencies),
+    Count = as.numeric(transition_frequencies),
+    stringsAsFactors = FALSE
+  )
+  return(transition_df)
+}
+
+#Calling the tranistion token function
+transition_df <- dataset_c %>%
+  mutate(Transition_Frequencies = map(Combined_Sequence, calculate_transition_frequencies)) %>%
+  unnest(Transition_Frequencies) %>%  mutate(UniqueID = as.character(UniqueID)) # Transition_Frequencies
+
+# Pivot the dataframe to wide format
+data_TS <- transition_df %>%
+  pivot_wider(names_from = Transition, values_from = Count, values_fill = 0) %>%
+  select(-Combined_Sequence)  
+
+#Create the datframe with excluding self transitions
+data_TS_wNA <- data_TS %>%   select(-matches("\\*")) %>%   select(-matches("^([A-Z*]) \\1$"))
+
+#Removing the uncessary datasets in the memory
+rm(dataset_c, token_df, transition_df)
+
+
+
+
+```
+
+#### Fucnctions Definitions for all analysis
+
+- create_scaled_dataframe: Scales the dataset to prepare it for clustering analysis.
+
+- calculate_and_plot_elbow_method: Calculates the Within-cluster Sum of Squares (WSS) for different values of k    (number of clusters) and plots the results to identify the optimal number of clusters using the Elbow Method.
+
+- calculate_and_plot_silhouette_scores: Computes the Silhouette Score for different values of k and plots the      results to identify the optimal number of clusters based on silhouette analysis.
+
+- perform_kmeans_clustering: Performs k-means clustering on the scaled data with the specified number of clusters   and returns the clustering result.
+
+- create_pca_plot: Creates a PCA plot to visualize the clustering results in reduced dimensions.
+
+- generate_cluster_summary_statistics: Generates summary statistics for each cluster, including token frequencies   and top tokens summary.
+
+- perform_hierarchical_clustering: Performs hierarchical clustering using the Ward's method and returns the        clustering result.
+
+- create_pca_plot_hclust: Creates a PCA plot with hierarchical clustering results to visualize clusters.
+
+- generate_cluster_summary_statistics_hclust: Generates cluster summary statistics for hierarchical clustering     results.
+
+- perform_gmm_clustering: Performs Gaussian Mixture Model (GMM) clustering and returns the clustering result.
+
+- create_pca_plot_gmm: Creates a PCA plot with GMM clustering results to visualize clusters.
+
+- generate_cluster_summary_statistics_gmm: Generates cluster summary statistics for GMM clustering results.
+
+```{r warning=FALSE}
+#################################
+#####Functions Definitions#####
+#################################
+
+
+# Function to Create Scaled Dataframe
+create_scaled_dataframe <- function(data) {
+  scaled_data <- data %>%
+    select(-1) %>%
+    scale()
+  return(scaled_data)
+}
+
+# Function to Calculate and Plot Elbow Method Results
+calculate_and_plot_elbow_method <- function(scaled_data, max_k = 10) {
+  set.seed(123)
+  wss <- numeric(max_k)
+  for (i in 1:max_k) {
+    kmeans_model <- kmeans(scaled_data, centers = i)
+    wss[i] <- sum(kmeans_model$withinss)
+  }
+  plot(1:max_k, wss, type = "b", xlab = "Number of Clusters (k)", ylab = "Within-cluster Sum of Squares (wss)",
+       main = "Elbow Method")
+}
+
+# Function to Calculate and Plot Silhouette Scores
+calculate_and_plot_silhouette_scores <- function(scaled_data, max_k = 9) {
+  set.seed(123)
+  compute_avg_sil <- function(k) {
+    model <- kmeans(scaled_data, centers = k, nstart = 25)
+    sil <- silhouette(model$cluster, dist(scaled_data))
+    mean(sil[, "sil_width"])
+  }
+  
+  avg_sil_width <- sapply(2:max_k, compute_avg_sil)
+  plot(2:max_k, avg_sil_width, type='b', xlab="Number of Clusters (k)", ylab="Average Silhouette Width",
+       main = "Silhouette Score Method")
+  
+  optimal_clusters <- which.max(avg_sil_width) + 1
+  cat("The optimal number of clusters based on silhouette analysis is", optimal_clusters, 
+      "with an average silhouette width of", max(avg_sil_width), "\n")
+}
+
+# Function to Perform K-means Clustering
+perform_kmeans_clustering <- function(scaled_data, optimal_clusters) {
+  set.seed(123)
+  kmeans_result <- kmeans(scaled_data, centers = optimal_clusters, nstart = 25)
+  return(kmeans_result)
+}
+
+# Function to Create PCA Plot
+create_pca_plot <- function(scaled_data, kmeans_result) {
+  pca_result <- prcomp(scaled_data)
+  pca_df <- data.frame(pca_result$x)
+  pca_df$cluster <- factor(kmeans_result$cluster)
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point() +
+    theme_minimal() +
+    labs(title = "K-means Clustering with PCA Reduction",
+         x = "Principal Component 1",
+         y = "Principal Component 2")
+}
+
+# Function to Generate Cluster Summary Statistics
+generate_cluster_summary_statistics <- function(data, kmeans_result) {
+  optimal_k <- length(unique(kmeans_result$cluster))
+  for (i in 1:optimal_k) {
+    cat(paste("Cluster", i, "summary statistics:\n"))
+    cluster_data <- data[kmeans_result$cluster == i, ]
+    column_sums <- colSums(cluster_data[, !names(cluster_data) %in% c("UniqueID", "Cluster")])
+    cat("Token Frequencies:\n")
+    print(column_sums)
+    cat("\n")
+    top_tokens <- names(sort(column_sums, decreasing = TRUE))[1:5]
+    top_tokens_data <- cluster_data[, top_tokens, drop = FALSE]
+    cat("\nTop 5 Tokens Summary:\n")
+    summary_stats <- summary(top_tokens_data)
+    print(summary_stats)
+    cat("\n\n")
+  }
+}
+
+# Function to Generate Cluster Summary Statistics
+generate_cluster_summary_statistics_TT <- function(data, kmeans_result) {
+  optimal_k <- length(unique(kmeans_result$cluster))
+  for (i in 1:optimal_k) {
+    cat(paste("Cluster", i, "summary statistics:\n"))
+    cluster_data <- data[kmeans_result$cluster == i, ]
+    column_sums <- colSums(cluster_data[, !names(cluster_data) %in% c("UniqueID", "Cluster")])
+    cat("Transition Frequencies:\n")
+    print(column_sums)
+    cat("\n")
+    top_tokens <- names(sort(column_sums, decreasing = TRUE))[1:5]
+    top_tokens_data <- cluster_data[, top_tokens, drop = FALSE]
+    cat("\nTop 5 Transitions Summary:\n")
+    summary_stats <- summary(top_tokens_data)
+    print(summary_stats)
+    cat("\n\n")
+  }
+}
+
+
+# Function to Perform Hierarchical Clustering
+perform_hierarchical_clustering <- function(scaled_data) {
+  dist_matrix <- dist(scaled_data)
+  hclust_result <- hclust(dist_matrix, method = "ward.D2")
+  return(hclust_result)
+}
+
+# Function to Create PCA Plot with Hierarchical Clustering Results
+create_pca_plot_hclust <- function(scaled_data, hclust_result, k) {
+  pca_result <- prcomp(scaled_data)
+  pca_df <- data.frame(pca_result$x)
+  clusters <- cutree(hclust_result, k = k)
+  pca_df$cluster <- factor(clusters)
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point() +
+    theme_minimal() +
+    labs(title = paste("Hierarchical Clustering with PCA Reduction (", k, "clusters)", sep = ""),
+         x = "Principal Component 1",
+         y = "Principal Component 2")
+}
+
+# Function to Generate Cluster Summary Statistics with Hierarchical Clustering Results
+generate_cluster_summary_statistics_hclust <- function(data, hclust_result, k) {
+  clusters <- cutree(hclust_result, k = k)
+  for (i in 1:k) {
+    cat(paste("Cluster", i, "summary statistics:\n"))
+    cluster_data <- data[clusters == i, ]
+    column_sums <- colSums(cluster_data[, !names(cluster_data) %in% c("UniqueID", "Cluster")])
+    cat("Token Frequencies:\n")
+    print(column_sums)
+    cat("\n")
+    top_tokens <- names(sort(column_sums, decreasing = TRUE))[1:5]
+    top_tokens_data <- cluster_data[, top_tokens, drop = FALSE]
+    cat("\nTop 5 Tokens Summary:\n")
+    summary_stats <- summary(top_tokens_data)
+    print(summary_stats)
+    cat("\n\n")
+  }
+}
+
+
+
+
+# Function to Perform GMM Clustering
+perform_gmm_clustering <- function(scaled_data, k) {
+  gmm_result <- Mclust(scaled_data, G = k)
+  return(gmm_result)
+}
+
+# Function to Create PCA Plot with GMM Clustering Results
+create_pca_plot_gmm <- function(scaled_data, gmm_result) {
+  pca_result <- prcomp(scaled_data)
+  pca_df <- data.frame(pca_result$x)
+  clusters <- gmm_result$classification
+  pca_df$cluster <- factor(clusters)
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point() +
+    theme_minimal() +
+    labs(title = paste("GMM Clustering with PCA Reduction (", length(unique(clusters)), "clusters)", sep = ""),
+         x = "Principal Component 1",
+         y = "Principal Component 2")
+}
+
+
+
+# Function to Generate Cluster Summary Statistics for Top Tokens
+generate_cluster_summary_statistics_gmm <- function(data, gmm_result) {
+  clusters <- gmm_result$classification
+  num_clusters <- length(unique(clusters))
+  for (i in 1:num_clusters) {
+    cat(paste("Cluster", i, "summary statistics:\n"))
+    cluster_data <- data[clusters == i, ]
+    column_sums <- colSums(cluster_data[, !names(cluster_data) %in% c("UniqueID", "Cluster")])
+    cat("Token Frequencies:\n")
+    print(column_sums)
+    cat("\n")
+    top_tokens <- names(sort(column_sums, decreasing = TRUE))[1:5]  # Extract top 5 tokens
+    top_tokens_data <- cluster_data[, top_tokens, drop = FALSE]  # Subset data for top tokens
+    cat("\nTop 5 Tokens Summary:\n")
+    summary_stats <- summary(top_tokens_data)
+    print(summary_stats)
+    cat("\n\n")
+  }
+}
+
+
+```
+
+#### Scaling Data
+
+This code block is dedicated to creating the scaled dataframe calling the fuctions created above.
+
+```{r}
+
+###########################################
+##############Scaling Data#################
+###########################################
+
+# Create scaled dataframe
+  data_TO_scaled <- create_scaled_dataframe(data_TO)
+
+# Create scaled dataframe
+  data_TS_scaled <- create_scaled_dataframe(data_TS)
+
+# Create scaled dataframe
+  data_TS_wNA_scaled <- create_scaled_dataframe(data_TS_wNA)
+
+
+```
+
+#### Single Token Occurrence Analysis
+
+-  Users can explore, examine, and visualise clusters in their dataset with this code block's extensive workflow    for clustering analysis through the use of different clustering methods.
+
+-  To assist in determining the ideal number of clusters, the elbow method results are computed and plotted by      the code block.
+
+-  To evaluate the quality of clusters produced silhouette scores are also computed and plotted.
+
+-  The user is prompted to enter the optimal number of clusters.
+
+-  The code carries out the subsequent tasks in accordance with the user's selected clustering option (K-means,     Hierarchical, or Distribution-based):
+
+  *K-means Clustering (Option 1):*
+    Performs K-means clustering on the scaled dataset.
+    Generates PCA plots to visualize cluster separation.
+    Generates cluster summary statistics.
+    Visualizes token states by sequence position within each cluster using area plots and heatmaps.
+      
+  *Hierarchical Clustering (Option 2):*
+    Performs hierarchical clustering on the scaled dataset.
+    Plots dendrograms to visualize cluster hierarchies.
+    Generates cluster summary statistics.
+    Visualizes token states by sequence position within each cluster using area plots and heatmaps.
+    
+  *Distribution-based Clustering (Option 3):*
+    Performs distribution-based clustering on the scaled dataset.
+    Generates PCA plots to visualize cluster separation.
+    Generates cluster summary statistics.
+    Visualizes token states by sequence position within each cluster using area plots and heatmaps.
+      
+***Note: As the library mclust overrides the map function from the purrr package it is loaded separately in necessary code block and removed at the end of the code block***
+  
+```{r}
+
+###########################################
+#####Single Token Occurrence Analysis######
+###########################################
+
+
+library(mclust)
+
+
+# Plot Elbow Method Results
+calculate_and_plot_elbow_method(data_TO_scaled)
+
+# Plot Silhouette Scores
+calculate_and_plot_silhouette_scores(data_TO_scaled)
+
+# Determine Optimal Number of Clusters
+  optimal_clusters_str <- readline(prompt = "Enter Optimal Cluster Number: ")
+  optimal_clusters <- as.numeric(optimal_clusters_str)
+
+option <- as.integer(readline(prompt = "Enter from below which clustering option would you like:\n 1.Kmeans\n 2.Heirarchial\n 3.Distribution "))
+
+
+switch(option,
+       {
+         # Perform K-means Clustering
+         if (option == 1) {
+           kmeans_result <- perform_kmeans_clustering(data_TO_scaled, optimal_clusters)
+           plot_TO<-create_pca_plot(data_TO_scaled, kmeans_result)
+           print(plot_TO)
+           generate_cluster_summary_statistics(data_TO, kmeans_result)
+           cluster_labels <- kmeans_result$cluster
+           data_TO_Clusters_K<- cbind(data_TO, cluster_labels)
+           file_path <- "data_TO_Kmeans_cluster.csv"
+           if (file.exists(file_path)) {
+              message("File exists. It will be replaced.")
+            } else {
+              message("File does not exist. A new file will be created.")
+            }
+
+           write.csv(data_TO_Clusters_K, file = file_path, row.names = FALSE)
+         }
+       },
+       {
+         # Perform Heirarchical clustering
+         if (option == 2) {
+           hclust_result_TO <- perform_hierarchical_clustering(data_TO_scaled)
+           plot(hclust_result_TO, hang = -1, cex = 0.6, main = "Dendrogram")
+           k <- optimal_clusters
+           plot_TO<-create_pca_plot_hclust(data_TO_scaled, hclust_result_TO, k)
+           print(plot_TO)
+           generate_cluster_summary_statistics_hclust(data_TO, hclust_result_TO, k)
+            # Extract cluster labels from hclust result
+            cluster_labels <- cutree(hclust_result_TO, k = k)
+            data_TO_Clusters_h <- data_TO
+            data_TO_Clusters_h$cluster_labels <- cluster_labels
+            file_path <- "data_TO_Hierarchical_cluster.csv"
+            if (file.exists(file_path)) {
+               message("File exists. It will be replaced.")
+             } else {
+               message("File does not exist. A new file will be created.")
+             }
+
+           write.csv(data_TO_Clusters_h, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         # Perform distribution-based clustering
+         if (option == 3) {
+           k <- optimal_clusters  # Adjust the number of components as needed
+           gmm_result_TO <- perform_gmm_clustering(data_TO_scaled, k)
+           plot_TO<-create_pca_plot_gmm(data_TO_scaled, gmm_result_TO)
+           print(plot_TO)
+           generate_cluster_summary_statistics_gmm(data_TO, gmm_result_TO)
+           cluster_labels <- gmm_result_TO$classification
+           data_TO_Clusters_d<-cbind(data_TO, cluster_labels)
+           file_path <- "data_TO_Distribution_cluster.csv"
+           if (file.exists(file_path)) {
+               message("File exists. It will be replaced.")
+             } else {
+               message("File does not exist. A new file will be created.")
+             }
+
+           write.csv(data_TO_Clusters_d, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         # Default case
+         cat("Invalid option selected. Please select 1, 2, or 3.")
+       }
+)
+
+
+if ("cluster" %in% colnames(dataset)) {
+  # If it exists, delete the 'cluster_labels' column
+  dataset <- dataset[, -which(colnames(dataset) == "cluster")]
+}
+
+# Rename columns, first stays original, rest are numbered sequentially
+col_num_name <- seq(1, ncol(dataset)-1, by=1)
+col_num_name <- c(names(dataset[1]), col_num_name)
+colnames(dataset) <- col_num_name
+
+# Convert the dataset to a matrix and then to a vector, extracting unique columns
+unique_tokens <- unique(as.vector(as.matrix(dataset[,2:ncol(dataset)])))
+
+# Assign high-contrast colors to each unique token for heatmap coloring
+heatmap_color <- structure(kelly(n=length(unique_tokens)), names = unique_tokens)
+
+print(unique_tokens)
+
+switch(option,
+       {
+         # Perform K-means Clustering
+         if (option == 1) {
+
+            dataset$cluster <- data_TO_Clusters_K$cluster_labels
+            
+            for (i in 1:max(dataset$cluster)){
+            
+              # Subsetting dataset by cluster
+              data_clust <- dataset[dataset$cluster == i, ]  
+              
+              # Remove last column
+              data_clust$cluster <- NULL
+              
+              # Aggregating by token count at each point in the sequence 
+              token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID) %>%                     table()                        
+            
+              # Turning token_states into a dataframe...
+              state_map <- as.data.frame.matrix(token_states) 
+            
+              # Creating a rowname vector and ordering on this (rownames are characters - so convert) 
+              rn <- rownames(state_map)
+              state_map <- state_map[order(as.numeric(rn)), ]
+              
+              # Reorders columns
+              state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+            
+              allnames <- colnames(state_map)
+            
+              # Creating x-axis numeric label
+              state_map$SeqPosition <- as.numeric(rownames(state_map))
+            
+              # Turn state-map into a data table
+              state_map <- setDT(state_map) 
+            
+              state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+              
+              state_final <- rename(state_final, "Token" = "variable")
+              
+              TS_title <-paste0("Count of token states by sequence position - Cluster: ", as.character(i)) 
+            
+              # Print state plot
+              print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) + scale_fill_manual(values                     = heatmap_color) + geom_area() + ylab("Token Count") + xlab("Sequence Position") +                                ggtitle(TS_title) + theme(legend.position="bottom"))
+              
+              # Turning the dataframe into a matrix to use in complex heatmap 
+              heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)])
+            
+              # Setting row/col names to NULL, not necessary
+              colnames(heatmap_matrix) = NULL
+              rownames(heatmap_matrix) = NULL
+              
+              # This eliminates an option message
+              ht_opt$message = FALSE 
+            
+              HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+              
+              # Printing heatmap
+              print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+            }
+
+          }
+            
+         },
+         {
+          if (option == 2) {
+            dataset$cluster <- data_TO_Clusters_h$cluster_labels
+
+            for (i in 1:max(dataset$cluster)){
+            
+              # Subsetting dataset by cluster
+              data_clust <- dataset[dataset$cluster == i, ]  
+              
+              # Remove last column
+              data_clust$cluster <- NULL
+              
+              # Aggregating by token count at each point in the sequence 
+              token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID) %>%                     table()                        
+            
+              # Turning token_states into a dataframe...
+              state_map <- as.data.frame.matrix(token_states) 
+            
+              # Creating a rowname vector and ordering on this (rownames are characters - so convert) 
+              rn <- rownames(state_map)
+              state_map <- state_map[order(as.numeric(rn)), ]
+              
+              # Reorders Column
+              state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+            
+              allnames <- colnames(state_map)
+            
+              # Creating x-axis numeric label
+              state_map$SeqPosition <- as.numeric(rownames(state_map))
+            
+              # Turn state-map into a data table
+              state_map <- setDT(state_map) 
+            
+              state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+              
+              state_final <- rename(state_final, "Token" = "variable")
+              
+              TS_title <-paste0("Count of token states by sequence position - Cluster: ", as.character(i)) 
+            
+              # Print state plot
+              print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) + scale_fill_manual(values                     = heatmap_color) + geom_area() + ylab("Token Count") + xlab("Sequence Position") +                                ggtitle(TS_title) + theme(legend.position="bottom"))
+              # Turning the dataframe into a matrix to use in complexheatmap 
+              heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+            
+              # Setting row/col names to NULL, not necessary
+              colnames(heatmap_matrix) = NULL
+              rownames(heatmap_matrix) = NULL
+              
+              # This eliminates an option message
+              ht_opt$message = FALSE 
+            
+              HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+              
+              # Printing heatmap
+              print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+            }
+          }
+        },
+           {
+             if (option == 3) {
+                dataset$cluster <- data_TO_Clusters_d$cluster_labels
+                for (i in 1:max(dataset$cluster)){
+                  data_clust <- dataset[dataset$cluster == i, ]  
+                  data_clust$cluster <- NULL
+                  token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID)                   %>% table()    
+                  state_map <- as.data.frame.matrix(token_states) 
+                  rn <- rownames(state_map)
+                  state_map <- state_map[order(as.numeric(rn)), ]
+                  state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+                  allnames <- colnames(state_map)
+                  state_map$SeqPosition <- as.numeric(rownames(state_map))
+                  state_map <- setDT(state_map)
+                  state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+                  state_final <- rename(state_final, "Token" = "variable")
+                  TS_title <-paste0("Count of token states by sequence position - Cluster: ",                                      as.character(i)) 
+                  print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) +                                             scale_fill_manual(values = heatmap_color) + geom_area() + ylab("Token Count") +                                  xlab("Sequence Position") + ggtitle(TS_title) + theme(legend.position="bottom"))
+                  
+                  #Turning the dataframe into a matrix to use in complexheatmap 
+                  heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+                
+                  # Setting row/col names to NULL, not necessary
+                  colnames(heatmap_matrix) = NULL
+                  rownames(heatmap_matrix) = NULL
+                  
+                  # This eliminates an option message
+                  ht_opt$message = FALSE 
+                
+                  HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+                  
+                  # Printing heatmap
+                  print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+                }
+               
+              }
+           }
+)
+         
+
+detach("package:mclust")
+
+```
+
+#### Clustering Analysis with Transitioning Tokens (Including Self-Transitions)
+
+
+This code block operates similarly to the previous one but focuses on the dataframe containing transitioning tokens, including self-transitions. The flow of this code block mirrors that of the preceding one, with the key distinction being the dataset used. Despite this difference, the overall process remains consistent with previous iterations (code block 5).
+
+```{r  warning=FALSE}
+###################################################################
+#####Transitioning Tokens analsis (Including Self-Transitions)#####
+###################################################################
+
+library(mclust)
+
+# Plot Elbow Method Results
+  calculate_and_plot_elbow_method(data_TS_scaled)
+
+# Plot Silhouette Scores
+  calculate_and_plot_silhouette_scores(data_TS_scaled)
+
+
+# Determine Optimal Number of Clusters
+  optimal_clusters_str <- readline(prompt = "Enter Optimal Cluster Number: ")
+  optimal_clusters <- as.numeric(optimal_clusters_str)
+
+option <- as.integer(readline(prompt = "Enter from below which clustering option would you like:\n 1.Kmeans\n 2.Heirarchial\n 3.Distribution "))
+
+switch(option,
+       {
+         # Perform K-means Clustering
+         if (option == 1) {
+
+            # Perform K-means Clustering
+              kmeans_result <- perform_kmeans_clustering(data_TS_scaled, optimal_clusters)
+              plot_TS<-create_pca_plot(data_TS_scaled, kmeans_result)
+              print(plot_TS)
+              generate_cluster_summary_statistics_TT(data_TS, kmeans_result)
+              cluster_labels <- kmeans_result$cluster
+              data_TS_Clusters_k<- cbind(data_TS, cluster_labels)
+              file_path <- "data_TS_Kmeans_cluster.csv"
+             if (file.exists(file_path)) {
+               message("File exists. It will be replaced.")
+             } else {
+               message("File does not exist. A new file will be created.")
+             }
+
+           write.csv(data_TS_Clusters_k, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         # Perform Heirarchical
+         if (option == 2) {
+  
+            hclust_result_TS <- perform_hierarchical_clustering(data_TS_scaled)
+            plot(hclust_result_TS, hang = -1, cex = 0.6, main = "Dendrogram")
+            k<-optimal_clusters
+            plot_TS<-create_pca_plot_hclust(data_TS_scaled, hclust_result_TS, k)
+            print(plot_TS)
+            generate_cluster_summary_statistics_hclust(data_TS, hclust_result_TS, k)
+            cluster_labels <- cutree(hclust_result_TS, k = k)
+            data_TS_Clusters_h <- data_TS
+            data_TS_Clusters_h$cluster_labels <- cluster_labels
+            file_path <- "data_TS_Hierarchical_cluster.csv"
+            if (file.exists(file_path)) {
+               message("File exists. It will be replaced.")
+            } else {
+               message("File does not exist. A new file will be created.")
+            }
+
+           write.csv(data_TS_Clusters_h, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         if (option == 3) {
+
+          k <- optimal_clusters
+          gmm_result_TS <- perform_gmm_clustering(data_TS_scaled, k)
+          plot_TS<-create_pca_plot_gmm(data_TS_scaled, gmm_result_TS)
+          print(plot_TS)
+          generate_cluster_summary_statistics_gmm(data_TS, gmm_result_TS)
+          cluster_labels <- gmm_result_TS$classification
+          data_TS_Clusters_d<-cbind(data_TS, cluster_labels)
+          file_path <- "data_TS_Distribution_cluster.csv"
+          if (file.exists(file_path)) {
+             message("File exists. It will be replaced.")
+          } else {
+             message("File does not exist. A new file will be created.")
+          }
+
+           write.csv(data_TS_Clusters_d, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         # Default case
+         cat("Invalid option selected. Please select 1, 2, or 3.")
+       }
+
+)
+
+
+
+if ("cluster" %in% colnames(dataset)) {
+  # If it exists, delete the 'cluster_labels' column
+  dataset <- dataset[, -which(colnames(dataset) == "cluster")]
+}
+
+# Rename columns, first stays original, rest are numbered sequentially
+col_num_name <- seq(1, ncol(dataset)-1, by=1)
+col_num_name <- c(names(dataset[1]), col_num_name)
+colnames(dataset) <- col_num_name
+
+# Convert the dataset to a matrix and then to a vector, extracting unique columns
+unique_tokens <- unique(as.vector(as.matrix(dataset[,2:ncol(dataset)])))
+
+# Assign high-contrast colors to each unique token for heatmap coloring
+heatmap_color <- structure(kelly(n=length(unique_tokens)), names = unique_tokens)
+
+print(unique_tokens)
+
+switch(option,
+       {
+         # Perform K-means Clustering
+         if (option == 1) {
+
+            dataset$cluster <- data_TS_Clusters_k$cluster_labels
+            
+            for (i in 1:max(dataset$cluster)){
+            
+              # Subsetting dataset by cluster
+              data_clust <- dataset[dataset$cluster == i, ]  
+              
+              # Remove last column
+              data_clust$cluster <- NULL
+              
+              # Aggregating by token count at each point in the sequence 
+              token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID) %>%               table()                        
+            
+              # Turning token_states into a dataframe...
+              state_map <- as.data.frame.matrix(token_states) 
+            
+              # Creating a rowname vector and ordering on this (rownames are characters - so convert) 
+              rn <- rownames(state_map)
+              state_map <- state_map[order(as.numeric(rn)), ]
+              
+              # Reorders columns
+              state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+            
+              allnames <- colnames(state_map)
+            
+              # Creating x-axis numeric label
+              state_map$SeqPosition <- as.numeric(rownames(state_map))
+            
+              # Turn state-map into a data table
+              state_map <- setDT(state_map) 
+            
+              state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+              
+              state_final <- rename(state_final, "Token" = "variable")
+              
+              TS_title <-paste0("Count of token states by sequence position - Cluster: ", as.character(i)) 
+            
+              # Print state plot
+              print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) + scale_fill_manual(values                    = heatmap_color) + geom_area() + ylab("Token Count") + xlab("Sequence Position") +                               ggtitle(TS_title) + theme(legend.position="bottom"))
+              # Turning the dataframe into a matrix to use in complexheatmap 
+              heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+            
+              # Setting row/col names to NULL, not necessary
+              colnames(heatmap_matrix) = NULL
+              rownames(heatmap_matrix) = NULL
+              
+              # This eliminates an option message
+              ht_opt$message = FALSE 
+            
+              HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+              
+              # Printing heatmap
+              print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+            }
+
+          }
+            
+         },
+         {
+          if (option == 2) {
+            dataset$cluster <- data_TS_Clusters_h$cluster_labels
+
+            for (i in 1:max(dataset$cluster)){
+            
+              # Subsetting dataset by cluster
+              data_clust <- dataset[dataset$cluster == i, ]  
+              
+              # Remove last column
+              data_clust$cluster <- NULL
+              
+              # Aggregating by token count at each point in the sequence 
+              token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID) %>%               table()                        
+            
+              # Turning token_states into a dataframe...
+              state_map <- as.data.frame.matrix(token_states) 
+            
+              # Creating a rowname vector and ordering on this (rownames are characters - so convert) 
+              rn <- rownames(state_map)
+              state_map <- state_map[order(as.numeric(rn)), ]
+              
+              # Reorders columns
+              state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+            
+              allnames <- colnames(state_map)
+            
+              # Creating x-axis numeric label
+              state_map$SeqPosition <- as.numeric(rownames(state_map))
+            
+              # Turn state-map into a data table
+              state_map <- setDT(state_map) 
+            
+              state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+              
+              state_final <- rename(state_final, "Token" = "variable")
+              
+              TS_title <-paste0("Count of token states by sequence position - Cluster: ", as.character(i)) 
+            
+              # Print state plot
+              print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) + scale_fill_manual(values                    = heatmap_color) + geom_area() + ylab("Token Count") + xlab("Sequence Position") +                               ggtitle(TS_title) + theme(legend.position="bottom"))
+              
+              # Turning the dataframe into a matrix to use in complexheatmap 
+              heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+            
+              # Setting row/col names to NULL, not necessary
+              colnames(heatmap_matrix) = NULL
+              rownames(heatmap_matrix) = NULL
+              
+              # This eliminates an option message
+              ht_opt$message = FALSE 
+            
+              HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+              
+              # Printing heatmap
+              print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+            }
+          }
+        },
+           {
+             if (option == 3) {
+                dataset$cluster <- data_TS_Clusters_d$cluster_labels
+                for (i in 1:max(dataset$cluster)){
+                  data_clust <- dataset[dataset$cluster == i, ]  
+                  data_clust$cluster <- NULL
+                  token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID)                         %>% table()    
+                  state_map <- as.data.frame.matrix(token_states) 
+                  rn <- rownames(state_map)
+                  state_map <- state_map[order(as.numeric(rn)), ]
+                  state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+                  allnames <- colnames(state_map)
+                  state_map$SeqPosition <- as.numeric(rownames(state_map))
+                  state_map <- setDT(state_map)
+                  state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+                  state_final <- rename(state_final, "Token" = "variable")
+                  TS_title <-paste0("Count of token states by sequence position - Cluster: ",                                      as.character(i)) 
+                  print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) +                                             scale_fill_manual(values = heatmap_color) + geom_area() + ylab("Token Count") +                                  xlab("Sequence Position") + ggtitle(TS_title) + theme(legend.position="bottom"))
+               
+                  # Turning the dataframe into a matrix to use in complex heatmap 
+                  heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+                
+                  # Setting row/col names to NULL, not necessary
+                  colnames(heatmap_matrix) = NULL
+                  rownames(heatmap_matrix) = NULL
+                  
+                  # This eliminates an option message
+                  ht_opt$message = FALSE 
+                
+                  HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+                  
+                  # Printing heatmap
+                  print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+                }
+               
+              }
+           }
+)
+  
+
+
+
+
+
+detach("package:mclust")
+
+```
+#### Clustering Analysis with Transitioning Tokens (Excluding Self-Transitions)
+
+Similar to the preceding code blocks, this section will analyze the dataframe containing transitioning tokens, excluding self-transitions. The process entails performing the same operations as described in the code block 5, but specifically focused on this subset of data.
+
+```{r warning=FALSE}
+
+###################################################################
+#####Transitioning Tokens analsis (Excluding Self-Transitions)#####
+###################################################################
+
+library(mclust)
+
+# Plot Elbow Method Results
+  calculate_and_plot_elbow_method(data_TS_wNA_scaled)
+  
+# Plot Silhouette Scores
+  calculate_and_plot_silhouette_scores(data_TS_wNA_scaled)
+  
+# Determine Optimal Number of Clusters
+  optimal_clusters_str <- readline(prompt = "Enter Optimal Cluster Number: ")
+  optimal_clusters <- as.numeric(optimal_clusters_str)
+  
+option <- as.integer(readline(prompt = "Enter from below which clustering option would you like:\n 1.Kmeans\n 2.Heirarchial\n 3.Distribution "))
+
+switch(option,
+       {
+         # Perform K-means Clustering
+         if (option == 1) {
+  
+          # Perform K-means Clustering
+            kmeans_result <- perform_kmeans_clustering(data_TS_wNA_scaled, optimal_clusters)
+            plot_TS_wNA<-create_pca_plot(data_TS_wNA_scaled, kmeans_result)
+            print(plot_TS_wNA)
+            generate_cluster_summary_statistics_TT(data_TS_wNA, kmeans_result)
+            cluster_labels <- kmeans_result$cluster
+            data_TS_wNA_Clusters_k<- cbind(data_TS_wNA, cluster_labels)
+            file_path <- "data_TS_wNA_Kmeans_cluster.csv"
+            if (file.exists(file_path)) {
+               message("File exists. It will be replaced.")
+            } else {
+               message("File does not exist. A new file will be created.")
+            }
+
+           write.csv(data_TS_wNA_Clusters_k, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         # Perform Heirarchical
+         if (option == 2) {
+            hclust_result_wNA <- perform_hierarchical_clustering(data_TS_wNA_scaled)
+            plot(hclust_result_wNA, hang = -1, cex = 0.6, main = "Dendrogram")
+            k<-optimal_clusters
+            plot_TS_wNA<-create_pca_plot_hclust(data_TS_wNA_scaled, hclust_result_wNA, k)
+            print(plot_TS_wNA)
+            generate_cluster_summary_statistics_hclust(data_TS_wNA, hclust_result_wNA, k)
+            cluster_labels <- cutree(hclust_result_wNA, k = k)
+            data_TS_wNA_Clusters_h <- data_TS_wNA
+            data_TS_wNA_Clusters_h$cluster_labels <- cluster_labels
+            file_path <- "data_TS_wNA_Hierarchical_cluster.csv"
+            if (file.exists(file_path)) {
+               message("File exists. It will be replaced.")
+            } else {
+               message("File does not exist. A new file will be created.")
+            }
+
+           write.csv(data_TS_wNA_Clusters_h, file = file_path, row.names = FALSE)
+
+         }
+       },
+       {
+         # Perform Distribution
+         if (option == 3) {
+            k <- optimal_clusters
+            gmm_result_wNA <- perform_gmm_clustering(data_TS_wNA_scaled, k)
+            plot_TS_wNA<-create_pca_plot_gmm(data_TS_wNA_scaled, gmm_result_wNA)
+            print(plot_TS_wNA)
+            generate_cluster_summary_statistics_gmm(data_TS_wNA, gmm_result_wNA)
+            cluster_labels <- gmm_result_wNA$classification
+            data_TS_wNA_Clusters_d<-cbind(data_TS_wNA, cluster_labels)
+            file_path <- "data_TS_wNA_Distribution_cluster.csv"
+            if (file.exists(file_path)) {
+                message("File exists. It will be replaced.")
+            } else {
+                message("File does not exist. A new file will be created.")
+            }
+           write.csv(data_TS_wNA_Clusters_d, file = file_path, row.names = FALSE)
+
+         }
+       }
+)
+
+
+
+
+if ("cluster" %in% colnames(dataset)) {
+  # If it exists, delete the 'cluster_labels' column
+  dataset <- dataset[, -which(colnames(dataset) == "cluster")]
+}
+
+# Rename columns, first stays original, rest are numbered sequentially
+col_num_name <- seq(1, ncol(dataset)-1, by=1)
+col_num_name <- c(names(dataset[1]), col_num_name)
+colnames(dataset) <- col_num_name
+
+# Convert the dataset to a matrix and then to a vector, extracting unique columns
+unique_tokens <- unique(as.vector(as.matrix(dataset[,2:ncol(dataset)])))
+
+# Assign high-contrast colors to each unique token for heatmap coloring
+heatmap_color <- structure(kelly(n=length(unique_tokens)), names = unique_tokens)
+
+print(unique_tokens)
+
+switch(option,
+       {
+         # Perform K-means Clustering
+         if (option == 1) {
+
+            dataset$cluster <- data_TS_wNA_Clusters_k$cluster_labels
+            
+            for (i in 1:max(dataset$cluster)){
+            
+              # Subsetting dataset by cluster
+              data_clust <- dataset[dataset$cluster == i, ]  
+              
+              # Remove last column
+              data_clust$cluster <- NULL
+              
+              # Aggregating by token count at each point in the sequence 
+              token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID) %>%                    table()                        
+            
+              # Turning token_states into a dataframe...
+              state_map <- as.data.frame.matrix(token_states) 
+            
+              # Creating a rowname vector and ordering on this (rownames are characters - so convert) 
+              rn <- rownames(state_map)
+              state_map <- state_map[order(as.numeric(rn)), ]
+              
+              # Reorders columns
+              state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+            
+              allnames <- colnames(state_map)
+            
+              # Creating x-axis numeric label
+              state_map$SeqPosition <- as.numeric(rownames(state_map))
+            
+              # Turn state-map into a data table
+              state_map <- setDT(state_map) 
+            
+              state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+              
+              state_final <- rename(state_final, "Token" = "variable")
+              
+              TS_title <-paste0("Count of token states by sequence position - Cluster: ", as.character(i)) 
+            
+              # Print state plot
+              print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) + scale_fill_manual(values                    = heatmap_color) + geom_area() + ylab("Token Count") + xlab("Sequence Position") +                               ggtitle(TS_title) + theme(legend.position="bottom"))
+              
+              # Turning the dataframe into a matrix to use in complexheatmap 
+              heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+              
+              # Setting row/col names to NULL, not necessary
+              colnames(heatmap_matrix) = NULL
+              rownames(heatmap_matrix) = NULL
+              
+              # This eliminates an option message
+              ht_opt$message = FALSE 
+            
+              HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+              
+              # Printing heatmap
+              print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+            }
+
+          }
+            
+         },
+         {
+          if (option == 2) {
+            dataset$cluster <- data_TS_wNA_Clusters_h$cluster_labels
+
+            for (i in 1:max(dataset$cluster)){
+            
+              # Subsetting dataset by cluster
+              data_clust <- dataset[dataset$cluster == i, ]  
+              
+              # Remove last column
+              data_clust$cluster <- NULL
+              
+              # Aggregating by token count at each point in the sequence 
+              token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID) %>%                    table()                        
+            
+              # Turning token_states into a dataframe...
+              state_map <- as.data.frame.matrix(token_states) 
+            
+              # Creating a rowname vector and ordering on this (rownames are characters - so convert) 
+              rn <- rownames(state_map)
+              state_map <- state_map[order(as.numeric(rn)), ]
+              
+              # Reorders columns
+              state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+            
+              allnames <- colnames(state_map)
+            
+              # Creating x-axis numeric label
+              state_map$SeqPosition <- as.numeric(rownames(state_map))
+            
+              # Turn state-map into a data table
+              state_map <- setDT(state_map) 
+            
+              state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+              
+              state_final <- rename(state_final, "Token" = "variable")
+              
+              TS_title <-paste0("Count of token states by sequence position - Cluster: ", as.character(i)) 
+            
+              # Print state plot
+              print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) + scale_fill_manual(values                    = heatmap_color) + geom_area() + ylab("Token Count") + xlab("Sequence Position") +                               ggtitle(TS_title) + theme(legend.position="bottom"))
+              
+              #Turning the dataframe into a matrix to use in complexheatmap 
+              heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)]) 
+            
+              # Setting row/col names to NULL, not necessary
+              colnames(heatmap_matrix) = NULL
+              rownames(heatmap_matrix) = NULL
+              
+              # This eliminates an option message
+              ht_opt$message = FALSE 
+            
+              HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+              
+              # Printing heatmap
+              print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+            }
+          }
+        },
+           {
+             if (option == 3) {
+                dataset$cluster <- data_TS_wNA_Clusters_d$cluster_labels
+                for (i in 1:max(dataset$cluster)){
+                  data_clust <- dataset[dataset$cluster == i, ]  
+                  data_clust$cluster <- NULL
+                  token_states <- data_clust %>% gather(key, value, -UniqueID) %>% dplyr::select(-UniqueID)                        %>% table()    
+                  state_map <- as.data.frame.matrix(token_states) 
+                  rn <- rownames(state_map)
+                  state_map <- state_map[order(as.numeric(rn)), ]
+                  state_map <- state_map[,order(colSums(-state_map,na.rm=TRUE))]
+                  allnames <- colnames(state_map)
+                  state_map$SeqPosition <- as.numeric(rownames(state_map))
+                  state_map <- setDT(state_map)
+                  state_final <- melt(state_map, id.vars = "SeqPosition", measure.vars = allnames)
+                  state_final <- rename(state_final, "Token" = "variable")
+                  TS_title <-paste0("Count of token states by sequence position - Cluster: ",                                      as.character(i)) 
+                  print(ggplot(state_final, aes(x=SeqPosition, y=value, fill=Token)) +                                             scale_fill_manual(values = heatmap_color) + geom_area() + ylab("Token Count") +                                  xlab("Sequence Position") + ggtitle(TS_title) + theme(legend.position="bottom"))
+                  
+                  # Turning the dataframe into a matrix to use in complexheatmap 
+                  heatmap_matrix <- as.matrix(data_clust[, 2:(ncol(dataset)-1)])
+                
+                  # Setting row/col names to NULL, not necessary
+                  colnames(heatmap_matrix) = NULL
+                  rownames(heatmap_matrix) = NULL
+                  
+                  # This eliminates an option message
+                  ht_opt$message = FALSE 
+                
+                  HM_title <-paste0("Token Heatmap Cluster: ", as.character(i))
+                  
+                  # Printing heatmap
+                  print(Heatmap(heatmap_matrix, name = "mat", col = heatmap_color, column_title = HM_title))
+                }
+               
+              }
+           }
+)
+  
+
+
+detach("package:mclust")
+
+```
+
+
+
+
+
+
+
+
+

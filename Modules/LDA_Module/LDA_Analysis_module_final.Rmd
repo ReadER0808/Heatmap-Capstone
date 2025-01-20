@@ -1,0 +1,339 @@
+---
+title: "LDA Analysis Module"
+author: '"Heatmap Capstone Project Team'
+date: "2024-05-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Heatmap Capstone: Text Analysis (LDA) Module
+
+This module uses Latent Dirichlet Allocation (LDA) to discover underlying topics within a corpus and assigns probabilities of each topic to documents. This reveals the thematic structure of the text (tokens) for the selected dataset.
+
+LDA is one of the most popular approaches for probabilistic topic modelling. The goal of topic modeling is to automatically assign topics to documents without human supervision.
+
+### Library installation
+
+The code block begins by loading necessary libraries for data manipulation, visualization, and LDA. Please ensure that these libraries are installed
+
+```{r, , warning=FALSE }
+
+  library(topicmodels)
+  library(tm)
+  library(dplyr)
+  library(tidyr)
+  library(tidyverse)
+  library(knitr)
+  library(LDAvis) 
+  library(quanteda)
+  library(topicmodels)
+  library(dplyr)
+  library(knitr)
+  library(digest)
+  library(LDAvis)
+  library(topicmodels)
+  library(tm)
+```
+
+### Load dataset
+
+The following code reads a CSV file containing the dataset using the `read.csv()` function. The datafile and this .rmd file must be in the working directory.
+
+If a custom file is used, it should follow a specific structure: - The first column should contain IDs with the column name `UniqueID`. Subsequent columns should represent days, named numerically starting from 1.
+
+For example, the structure should resemble:
+
+| UniqueID | 1   | 2   | 3   | ... |
+|----------|-----|-----|-----|-----|
+| id1      |     |     |     |     |
+| id2      |     |     |     |     |
+| ...      |     |     |     |     |
+
+The `header` parameter is set to `TRUE` to indicate that the first row contains column names, and `check.names` is set to `FALSE` to avoid column name validation.
+
+The dataset is then stored in the `dataset` variable for further analysis.
+
+```{r, echo=FALSE}
+# Load dataset full data / concise 
+  dataset <- read.csv("mod_r_data.csv",  header = TRUE, check.names = FALSE ) # Reduced Dataset
+
+ 
+```
+
+### Pre-Processing
+
+The following code block focuses on preprocessing the data to prepare it for further analysis:
+
+Convert data into long data format The code block begins by converting the dataset into long format using the `pivot_longer()` function from the `tidyr` package. This function reshapes the dataset so that each row represents a single observation (combination of UniqueID, Day, and Token). Missing or empty values in the Token column are replaced with NA.
+
+Function to create event log Next, a custom function `analyze_patterns_enhanced()` is defined to analyze the patterns in the long-format data. This function iterates over each UniqueID, identifies change points in the Token column (indicating a change in the pattern), and creates a new dataframe `enhanced_results_df` containing information about the patterns observed for each UniqueID.
+
+Regenerate Event_Log using the updated function The `analyze_patterns_enhanced()` function is applied to the long-format data to regenerate the event log `Event_Log`, which contains information about the patterns observed in the data.
+
+Calculate desired percentiles for PatternLength Desired percentiles (5th, 25th, 50th, 75th, and 95th) for the PatternLength variable in the event log are calculated using the `quantile()` function.
+
+Define custom breaks and labels based on calculated percentiles Custom breaks and labels are defined based on the calculated percentiles to categorize the PatternLength variable into discrete intervals. These intervals are labeled as "VeryShort," "Short," "Medium," "Long," "VeryLong," and "ExtremelyLong."
+
+Categorise PatternLength using the defined breaks and labels The `cut()` function is used to categorise the PatternLength variable into the predefined intervals using the defined breaks and labels.
+
+Create a new item label that combines Token and PatternLengthCat. A new variable `itemLabel` is created by concatenating the Token and PatternLengthCat variables with an underscore separator. This variable represents each item in the transaction dataset and incorporates information about both the Token and the categorized PatternLength.
+
+This preprocessing step is crucial for organising and structuring the data in a way that facilitates subsequent analysis, such as association rule mining.
+
+```{r, echo=FALSE}
+###########################################
+##### Pre-Processing ######################
+###########################################
+
+
+# Convert data into long data format
+long_data <- dataset %>%
+  pivot_longer(
+    cols = -UniqueID,
+    names_to = "Day",
+    values_to = "Token"
+  ) %>%
+  mutate(
+    Day = as.integer(Day),
+    Token = ifelse(Token == "" | is.na(Token), NA, Token)
+  ) %>%
+  drop_na(Token)
+
+# Function to create event log
+analyze_patterns_enhanced <- function(long_data) {
+  
+  df_list <- split(long_data, f = long_data$UniqueID)
+  
+  enhanced_results_df <- data.frame(UniqueID = character(), StartDay = integer(), EndDay = integer(),
+                                    Token = character(), PatternLength = integer(), stringsAsFactors = FALSE)
+  
+  for(UniqueID in names(df_list)) {
+    current_df <- df_list[[UniqueID]]
+    
+    change_points <- which(c(TRUE, as.character(current_df$Token)[-1] != head(as.character(current_df$Token), -1)))
+    
+    for(i in seq_along(change_points)) {
+      
+      if (i < length(change_points)) {
+        end_day_index <- change_points[i + 1] - 1
+      } else {
+        end_day_index <- nrow(current_df)
+      }
+      
+      pattern_length <- end_day_index - change_points[i] + 1
+      
+      enhanced_results_df <- rbind(enhanced_results_df, data.frame(
+        UniqueID = UniqueID,
+        StartDay = current_df$Day[change_points[i]],
+        EndDay = current_df$Day[end_day_index],
+        Token = current_df$Token[change_points[i]],
+        PatternLength = pattern_length,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  
+  return(enhanced_results_df)
+}
+
+
+# Regenerate Event_Log using the updated function
+Event_Log <- analyze_patterns_enhanced(long_data)
+
+# Calculate desired percentiles for PatternLength
+percentiles <- quantile(Event_Log$PatternLength, probs = c(0.05, 0.25, 0.50, 0.75, 0.95), na.rm = TRUE)
+
+# Define custom breaks and labels based on calculated percentiles
+breaks <- c(0, percentiles["5%"], percentiles["25%"], percentiles["50%"], percentiles["75%"], percentiles["95%"], max(Event_Log$PatternLength, na.rm = TRUE))
+labels <- c("VeryShort", "Short", "Medium", "Long", "VeryLong", "ExtremelyLong")
+
+# Categorize PatternLength using the defined breaks and labels
+Event_Log$PatternLengthCat <- cut(Event_Log$PatternLength,
+                                  breaks = breaks,
+                                  labels = labels,
+                                  include.lowest = TRUE)
+
+# Create a new item label that combines Token and PatternLengthCat
+Event_Log$itemLabel <- with(Event_Log, paste(Token, PatternLengthCat, sep="_"))
+
+# Create transactions from the item labels
+transactions_list_ME <- split(Event_Log$itemLabel, Event_Log$UniqueID)
+
+  # Combine item labels into documents
+  documents <- sapply(names(transactions_list_ME), function(id)     paste(transactions_list_ME[[id]], collapse = " "))
+  documents <- data.frame(documents)
+```
+
+### Pattern Length Analysis
+
+The following code block provides an analysis of the characteristics of pattern length to inform the user. These characteristics are integrated with tokens to create a new item set for further analysis:
+
+Display the percentile values in a readable format The code block begins by displaying the percentile values of the Pattern Length distribution in a readable format. Each category of pattern length (VeryShort, Short, Medium, Long, VeryLong, and ExtremelyLong) is presented along with its corresponding range of values.
+
+Next, the code block displays the distribution of Pattern Length Categories using the `table()` function. This provides an overview of the frequency of occurrence for each category (e.g., VeryShort, Short, Medium, etc.) in the event log.
+
+```{r, echo=FALSE}
+
+# Display the percentile values in a readable format
+cat("Pattern Length Distribution Percentiles:\n")
+cat(sprintf("Very Short: 0 - %.0f\n", percentiles["5%"]))
+cat(sprintf("Short: %.0f - %.0f\n", percentiles["5%"] + 1, percentiles["25%"]))
+cat(sprintf("Medium: %.0f - %.0f\n", percentiles["25%"] + 1, percentiles["50%"]))
+cat(sprintf("Long: %.0f - %.0f\n", percentiles["50%"] + 1, percentiles["75%"]))
+cat(sprintf("Very Long: %.0f - %.0f\n", percentiles["75%"] + 1, percentiles["95%"]))
+cat(sprintf("Extremely Long: %.0f - %.0f\n", percentiles["95%"] + 1, max(Event_Log$PatternLength, na.rm = TRUE)))
+
+
+cat("\nDistribution of Pattern Length Categories:\n")
+print(table(Event_Log$PatternLengthCat))
+```
+
+## LDA Modeling
+
+To run LDA from a dtm, first convert to the topicmodels format, and then run LDA. Note the use of set.seed(.) to make sure that the analysis is reproducible. Then create the corpus and then create a document term matrix (DTM).
+
+The standard format for representing a bag-of-words is as a `document-term-matrix` (DTM). This is a matrix in which rows are documents, columns are terms, and cells indicate how often each term occurred in each document. user can chose the number of topic
+
+Run a LDA_Gibbs topic model with n topics, The method "Gibbs" chosen for this analyses. In Latent Dirichlet Allocation (LDA), Gibbs sampling is a common method used for inference. LDA is a generative probabilistic model that represents documents as mixtures of topics, where each topic is a distribution over words.
+
+Fit the LDA model for different numbers of topics. Perplexity is a measure of how well a probability model predicts a sample. In the context of LDA, lower perplexity indicates a better fit to the data.In this code the perplexity graph helps to chose a topic number. Domain knowledge may also support choosing the number of topics.
+
+```{r, echo=FALSE}
+ 
+  # Create a corpus
+  corpus <- Corpus(VectorSource(documents$documents))
+  #dfm <- dfm(corpus)
+  
+  # Create a document-term matrix
+  dtm <- DocumentTermMatrix(corpus)
+  set.seed(1)
+  
+# Fit the LDA model for different numbers of topics
+#Perplexity is a measure of how well a probability model predicts a sample. In the context of LDA, lower perplexity indicates a better fit to the data.
+  
+perplexities <- sapply(2:15, function(k) {
+  lda_model <- LDA(dtm, k = k, control = list(seed = 1234))
+  perplexity(lda_model, newdata = dtm)
+})
+
+# Plot perplexity values
+plot(2:15, perplexities, type = "o", xlab = "Number of Topics", ylab = "Perplexity")  
+  
+  # Prompt the user to choose the number of topics
+num_topics <- as.integer(readline(prompt = "Enter the number of topics: "))
+# Print the user input
+
+  m = LDA(dtm, method = "Gibbs", k = num_topics,  control = list(alpha = 0.1))
+  m
+  
+  ## A LDA_Gibbs topic model with n topics as example is n=5.
+  
+  ##We can use terms to look at the top terms per topic:shows the group of event that are important in this topic
+  terms(m, 5)
+  
+  
+```
+
+## Word Cloud
+
+Although LDA will figure out the topics, we do need to decide ourselves how many topics we want. Also, there are certain hyperparameters (alpha) that we can tinker with to have some control over the topic distributions .
+
+The posterior function gives the posterior distribution of words and documents to topics, which can be used to plot a word cloud of terms proportional to their occurrence. You can chose a topic number.
+
+```{r, echo=FALSE}
+#topic 5 chosen for demo
+ topic = 5
+  words = posterior(m)$terms[topic, ]
+  topwords = head(sort(words, decreasing = T), n=50)
+  head(topwords)
+  
+  library(wordcloud)
+  wordcloud(names(topwords), topwords, c(3,.3), colors = brewer.pal(8, "Dark2"))
+  
+ 
+```
+
+##look at the topics per document,
+
+```{r, echo=FALSE}
+ #look at the topics per document, 
+  topic.docs = posterior(m)$topics[, topic] 
+  topic.docs = sort(topic.docs, decreasing=T)
+  head(topic.docs)
+ 
+```
+
+## Heatmap Topic documentation
+
+The heatmap of document-topic distributions in LDA shows how each document in the corpus is probabalistically associated with each topic identified by the model. Each row represents a document, each column represents a topic, and the cell values represent the probability that a document belongs to a particular topic. This visualization helps understand the distribution of topics across documents and identifies dominant topics within the corpus.
+
+The final step in the code block writes the UniqueID, most probable topic and the topic weights to a csv file.
+
+```{r, echo=FALSE}
+  # Extract document-topic distributions
+  doc_topic_distributions <- posterior(m)$topics
+  
+  # Assuming 'doc_topic_distributions' is a matrix with documents as rows and topics as columns
+  
+  # Create a heatmap of the document-topic distributions
+  heatmap(doc_topic_distributions, 
+          Rowv = NA, 
+          Colv = NA, 
+          scale = "none",  
+          xlab = "Topics", 
+          ylab = "Documents", 
+          main = "Document-Topic Distributions")
+  
+# Assuming 'doc_topic_distributions' is a matrix with documents as rows and topics as columns
+
+# Get the index of the topic with the highest probability for each document
+topic_assignments <- apply(doc_topic_distributions, 1, which.max)
+
+# Create a data frame to store document IDs and their corresponding topic assignments
+document_topic_assignments <- data.frame(Document = 1:nrow(doc_topic_distributions), Topic = topic_assignments)
+# Print or use document-topic assignments
+# head(document_topic_assignments)
+
+
+###Create output file using UniqueUD, topic_assignments, document_topic_assignments
+
+# Combine the selected columns into a new data frame
+new_df <- as.data.frame(dataset[ , "UniqueID"])
+new_df <- cbind(new_df, document_topic_assignments)
+new_df <- cbind(new_df, doc_topic_distributions)
+colnames(new_df)[1] <- "UniqueID"
+
+write.csv(new_df, "LDA_topics_weights.csv")
+  
+```
+
+## Intractive visualization
+
+LDAvis is a interactive visualization of LDA results: LDAvis provides an intuitive and interactive way to explore the topics generated by an LDA model and understand their relationships with terms and documents in the corpus. The graph shows:
+
+Global Topic Overview: a two-dimensional plot where each circle represents a topic. The distance between circles indicates the similarity between topics based on their word distributions. Topics with similar word distributions are closer together.
+
+Term Distribution: A bar chart that displays the most relevant terms for the selected topic. The terms are ranked by their relevance to the selected topic, which is calculated based on their probabilities within the topic and their overall frequency in the corpus.
+
+Topic Distribution: A bar chart that shows the distribution of topics across the entire corpus. It allows users to explore how prevalent each topic is and how topics are distributed among documents.
+
+```{r, echo=FALSE}
+ dtm = dtm[slam::row_sums(dtm) > 0, ]
+  phi = as.matrix(posterior(m)$terms)
+  theta <- as.matrix(posterior(m)$topics)
+  vocab <- colnames(phi)
+  doc.length = slam::row_sums(dtm)
+  term.freq = slam::col_sums(dtm)[match(vocab, colnames(dtm))]
+  
+  json = createJSON(phi = phi, theta = theta, vocab = vocab,
+                    doc.length = doc.length, term.frequency = term.freq)
+  serVis(json)
+  
+
+  
+  
+
+```

@@ -1,0 +1,273 @@
+---
+title: "Dataset_Formatting"
+output: html_document
+date: "2024-05-16"
+---
+
+The script processes a CSV file, performs data cleaning, transforms categorical and numerical columns, and generates various summary statistics and outputs.
+
+### Prerequisites
+R installed on your computer.
+Required R packages: dplyr, tidyr, stringr, kableExtra.
+
+
+### Set Up Working Directory
+
+Run the script and follow the prompt to set your working directory.
+
+### Load the Data
+
+Provide the name of your dataset file when prompted.
+
+### Save the Data
+
+The dataset mod_data.csv has been updated with the following changes: 
+the first column has been renamed to UniqueID, and all NA values have been replaced with *.
+
+### Create Token Replace File
+
+Open the Replace File
+
+After running the script, open replace_file.csv in a text editor or spreadsheet software.
+
+Edit the Replace File
+New Token: Replace the "????" with the desired new token for each old token.
+Threshold Token Count: Enter the minimum required number of tokens to be considered for analysis.
+
+Save the Replace File
+Save your changes to the replace file. The script or subsequent processes can now use this file for
+further analysis or token replacement.
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+
+working_dir <- readline(prompt = "Please enter the full path to your working directory:")
+setwd(working_dir)
+
+###Prompt for the name of the datafile
+read_df <- readline(prompt = "Please enter the full name of the dataset .csv file, including the suffix.")
+
+### Read in dataset
+dataset <- read.csv(read_df, header = FALSE)
+
+# Set the column name for the first column to "UniqueID"
+colnames(dataset)[1] <- "UniqueID"
+
+# Set the remaining column names to numerical values starting from 1 to the number of columns
+colnames(dataset)[-1] <- seq(1, ncol(dataset) - 1)
+
+# Assign “*” to blank or NA fields
+dataset[is.na(dataset)] <- "*"
+dataset[dataset == ""] <- "*"
+
+# Save the modified dataset to a new CSV file with headings and no row names
+write.csv(dataset, "mod_data.csv", row.names = FALSE)
+
+dataset_path <- "mod_data.csv"  # Default dataset path
+
+### Reload dataset based on modifications
+dataset <- read.csv(dataset_path, header = TRUE, check.names = FALSE)
+
+###Start concat_non_na function: Dataset concatentation function
+concat_non_na <- function(x, sep = "-") {
+  paste(na.omit(x), collapse = sep)
+}
+###End concat_non_na function
+
+###Concatenate dataset and add concatenated traces as an end column to the dataset
+dataset$Traces <- apply(dataset[,-1], 1, concat_non_na, sep = "-")
+
+###Create new dataset (final_data) comprising Trace ID and concatenated traces
+final_data <- dataset %>% select(UniqueID, Traces) 
+colnames(final_data)[1] <- "Sequence_ID"
+
+###Calculate each trace length (ex-NA) and add trace lengths as a third column to ###final_data  
+final_data$Trace_Length <- sapply(strsplit(final_data$Traces, "-"), function(x) sum(x != "*" & nchar(x) > 0))
+
+
+###Remove traces with no symbols from the final_data dataset
+final_data <- final_data[final_data$Trace_Length != 0, ]
+
+###Count the number of each token types in the dataset 
+token_counts <- final_data %>%
+  separate_rows(Traces, sep = "-") %>%
+  group_by(Traces) %>%
+  summarise(Count = n()) %>%
+  ungroup() %>%
+  arrange(desc(Count)) %>%
+  rename(Tokens = Traces)
+
+###Start condense_trace function: This function condenses contiguous sequences of ###one symbol into that symbol with a separator "-" between symbols. Contiguous ###blanks are represented by a "*".
+condense_trace <- function(trace) {
+  
+  trace <- gsub("--", "-*-", trace) # NA -> * placeholder Token
+  parts <- unlist(strsplit(trace, "-"))
+  condensed <- c()  
+  previous <- NULL
+  
+  for (part in parts) {
+    if (part != "" && !identical(part, previous)) {
+      condensed <- c(condensed, part)
+      previous <- part
+    }
+  }
+  
+  condensed_trace <- paste(condensed, collapse = "-")
+  
+  if (startsWith(condensed_trace, "*") && endsWith(condensed_trace, "*")) {
+    if (!startsWith(condensed_trace, "*-")) {
+      condensed_trace <- paste0("-*", condensed_trace)
+    }
+    if (!endsWith(condensed_trace, "-*")) {
+      condensed_trace <- paste0(condensed_trace, "-*")
+    }
+  }
+  
+  return(condensed_trace)
+}
+### End condense_trace function
+
+### Adding condensed trace column to final_data
+final_data$CT <- sapply(final_data$Traces, condense_trace)
+
+### Calculating the count of symbols in the dataset when treating contiguous 
+### sequences of the same symbol as one of that symbol   
+Tokens_CT <- unlist(str_split(final_data$CT, "-"))
+Token_frequencies_CT <- table(Tokens_CT)
+Token_frequencies_CT <- as.data.frame(Token_frequencies_CT)
+
+###Summing the token count for each trace where each sequence of the same symbols ### is treated as one of that symbol and appending as a new column to final_data
+final_data$CT_Length <- sapply(strsplit(final_data$CT, "-"), function(x) sum(nchar(x) > 0))
+
+### Creation of symbol replace file and token 
+
+replace_file <- as.data.frame(matrix(nrow = nrow(token_counts), ncol = 4))
+replace_file[,1] <- token_counts$Count
+replace_file[,2] <- token_counts$Tokens
+replace_file[,3] <- "????"
+replace_file[1,4] <- "Replace with absolute value"
+
+new_names <- c("Count", "Old Token", "New Token", "Threshold Token Count")
+colnames(replace_file) <- new_names
+write.csv(replace_file, "replace_file.csv")
+
+
+```
+
+The script shows the number of rows and columns in the dataset.
+The script also displays the number of unique tokens in the dataset.
+
+```{r}
+
+cat("The Dataset has", nrow(dataset), "rows and", ncol(dataset) - 1, "columns. The first column contains a unique trace ID.\n")
+cat("\nThe Dataset has", nrow(token_counts), "unique tokens.\n")
+
+```
+
+
+The following script generates a styled HTML table of token counts.
+
+```{r}
+library(kableExtra)
+
+# Generate the table
+token_table <- knitr::kable(token_counts, "html") %>%
+  kable_styling(full_width = FALSE)
+
+# Add column and row groups
+token_table <- kableExtra::column_spec(token_table, 1, width = "30%") %>%
+               kableExtra::collapse_rows(columns = 1, valign = "top", latex_hline = "full")
+
+# Output the table
+token_table
+```
+
+This code block creates two visualizations for the distribution of Trace Length.
+
+```{r}
+ggplot(final_data, aes(x = "", y = Trace_Length)) +
+  geom_violin(trim = FALSE, fill = "skyblue") +
+  geom_boxplot(width = 0.1, fill = "white", color = "black", outlier.shape = NA) +  # Add internal boxplot
+  labs(title = "Distribution of Trace Length",
+       y = "Trace Length",
+       x = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  coord_flip()
+
+ggplot(final_data, aes(x = Trace_Length)) +
+  geom_histogram(bins = 20, fill = "skyblue", color = "black") +  # Adjust the number of bins as needed
+  labs(title = "Histogram of Trace Length",
+       x = "Trace Length",
+       y = "Count") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 12, face = "bold"),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  )
+```
+This code block creates two visualizations for the distribution of Trace_Length in the condensed dataset. The condensed dataset reformats the original data such that traces do not have repeated tokens consecutively (e.g., "A-A-A-A-B-B-B-C-C" becomes "A-B-C").
+
+```{r}
+ggplot(final_data, aes(x = "", y = CT_Length)) +
+  geom_violin(trim = FALSE, fill = "skyblue") +
+  geom_boxplot(width = 0.1, fill = "white", color = "black", outlier.shape = NA) +  # Add internal boxplot
+  labs(title = "Distribution of Condensed Trace Length",
+       y = "Trace Length",
+       x = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  coord_flip()
+
+ggplot(final_data, aes(x = CT_Length)) +
+  geom_histogram(binwidth = 1, fill = "lightcoral") +
+  labs(title = "Distribution of Condensed Trace Length",
+       x = "Condensed Trace Length",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 12, face = "bold"),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  )
+
+```
+Ensure the dataset is loaded before running the replacement and filtering operations.
+Edit the replace_file.csv to specify the old tokens, new tokens, and threshold token count as needed.
+This code block ensures that the dataset is appropriately modified according to the replacement rules and filtered based on the specified threshold, and then saves the updated dataset "mod_r_data.csv" for further use.
+
+```{r}
+setwd(working_dir)
+
+replace_file <- read.table("replace_file.csv", header = TRUE, sep = ",", row.names = 1)
+
+if (!exists("dataset")) stop("Dataset not loaded yet")
+    
+for (rprow in 1:nrow(replace_file)) {
+        dataset[dataset == replace_file[rprow, 2]] <- replace_file[rprow, 3]
+        print(rprow)
+    }  
+quickCount <- as.vector(rowSums(dataset[,2:ncol(dataset)] != "*"))
+dataset$quickCount <- quickCount
+dataset <- filter(dataset, quickCount >= replace_file[1, 4])
+dataset$quickCount <- NULL
+
+# Select all columns except the last one
+dataset <- dataset[, -ncol(dataset)]    
+
+# Save modified dataset with replacements
+write.csv(dataset, "mod_r_data.csv", row.names = FALSE)
+
+```
+

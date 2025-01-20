@@ -1,0 +1,128 @@
+---
+title: "EDA4"
+author: "Heatmap Capstone Project Team"
+date: "2024-05-27"
+output: html_document
+---
+
+## Optimal matching - Traminer
+
+This code block implements the Traminer package and generates a heatmap with a dendrogram based on trace distances calculated through sequence alignment. There is one code block for execution. This code block covers the following:
+
+1.  Library calls.
+
+2.  Pre-processing for analysis.
+
+3.  State sequence plot and heatmap generation.
+
+### Library calls
+
+The code block begins by loading necessary libraries for data manipulation and visualisation. These include `TraMiner`, `TraMinerExtras`, `RColorBrewer`, `seqhandbook`, `FactoMineR`, `cluster`, `WeightedCluster`, `pals`.
+
+### Pre-processing for analysis
+
+Preprocessing the data to prepare it for further analysis:
+
+-   `dataset` copied to `trace_df`.
+
+-   `trace_df` filtered for duplicate IDs (shouldn't happen - but have add digit truncation of `Unique_ID` issues when importing the data initially.
+
+-   Create rownames for `trace_df` based on `Unique_ID`.
+
+-   Drop `Unique_ID` column.
+
+-   Assign numbers as column names from 1 to the number of columns in `trace_df`.
+
+-   Extract a vector from `trace_df` comprising the unique tokens (`unique_tokens`) in `trace_df`.
+
+-   Set a color palette (`my_color`) based on the length of `unique_tokens`.
+
+### State sequence plot and heatmap generation
+
+Generation of the state sequence and heatmap plots:
+
+-   The TraMinerR function `seqact` prepares `trace_df` for plotting, incorporating the token color assignment from `my_color` and the plot is rendered using `seqdplot`.
+
+-   A matrix (`indics`) is then generated showing the number of times in a state (token). This acts as an input into the inter-trace distance calculations. Alternative functions can be used for different feature measures such as duration in state or state transitions (see TraMineR documentation).
+
+-   The matrix `indics` is then processed using PCA with no scaling and six components (these can be modified).
+
+-   The distance (Euclidean) matrix is then calculated on the processed `indics` matrix (other distance measure can be used).
+
+-   Hierarchical clustering is then done.
+
+-   The heatmap, as ordered from the clustering is then plotted, with the cluster dendrogram adjacent.
+
+```{r, echo=FALSE}
+
+library(dplyr)
+library(TraMineR)
+library(TraMineRextras)
+library(RColorBrewer)
+library(seqhandbook)
+library(FactoMineR)
+library(cluster)
+library(WeightedCluster)
+library(pals)
+ 
+
+dataset <- read.csv("mod_r_data.csv", header = TRUE, check.names = FALSE)
+
+### Data preparation 
+
+### Assign row names using first column
+
+### Assign dataset to a new dataframe
+trace_df <- dataset
+trace_df <- trace_df[!duplicated(trace_df[ , c("UniqueID")]),] ### remove duplicates occurring due to read problems. Reading seems to truncate ID digits
+
+### Assign rownames to trace_df using UniqueIDsand drop UniqueID column
+rownames(trace_df) <- trace_df[,1]
+trace_df <- trace_df[ , -1]
+
+### Assign column names for plots
+colnames(trace_df) <- c(paste0("", 1:(ncol(trace_df))))
+
+# Convert the dataset to a matrix and then to a vector, and extract unique tokens
+unique_tokens <- unique(as.vector(as.matrix(trace_df)))
+
+### Assign high-contrast colors to each unique token for heatmap coloring
+my_color <- structure(kelly(n=length(unique_tokens)), names = unique_tokens)
+
+
+### Trace state-sequence plots and heatmaps using TraMiner ### 
+
+### Generate state sequence plot 
+seqact <- seqdef(trace_df, labels = unique_tokens, cpal = my_color)
+seqtab(seqact, idx = 0) %>% nrow
+seqdplot(seqact, border = NA, cex.axis = 0.5, cex.legend = 0.4)
+
+### Create a matrix for the number of times each trace has been in a token (state)
+### Forms the basis for the distance matrix
+### Other functions are available in TraMiner using alternative distance measures such as 
+### duration in state, state visited etc.
+indics <- seqinepi(seqact)
+
+### head(indics)
+
+### PCA for the distance matrix, options include scaling (set to false) and number of dimensions
+### (set to 6).
+### Alternative methods are also availabe for the distance measure
+acp_coords <- PCA(indics, scale.unit = FALSE, ncp = 6, graph = FALSE)$ind$coord
+dissim <- dist(acp_coords, method = 'euclidean') %>% as.matrix
+
+### Hierarchical clustering using Ward’s method and the agnes function of the cluster package.
+agnes <- as.dist(dissim) %>% agnes(method = "ward", keep.diss = FALSE)
+
+### Cluster dendrogram
+as.dendrogram(agnes) %>% plot(leaflab = "none")
+seq_heatmap(seqact, agnes)
+
+### Heatmap of traces as order by the cluster results
+plot(sort(agnes$height, decreasing = TRUE)[1:50], type = "s")
+wardRange <- as.clustrange(agnes, diss = dissim)
+summary(wardRange, max.rank = 2)
+plot(wardRange, stat = c('ASW', 'R2', 'CH'), norm = "zscore")
+
+
+```

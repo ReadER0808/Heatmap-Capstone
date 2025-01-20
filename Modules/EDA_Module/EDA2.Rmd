@@ -1,0 +1,227 @@
+---
+title: "EDA2"
+output: html_document
+date: "2024-05-20"
+---
+
+#In this below code blocks transition token frequency and teh start end token frequency count is analysed and plotted using bubble plot.
+
+Loading the necessary libraries and importing the data.
+
+Combining Sequences: A dataframe dataset_c is created, which combines each of the original dataset's separate                          sequences into a single combined sequence. All of the values in each row of the dataset                           are concatenated to create this combined sequence, with the exception of the first                                column, which is thought to be a unique identifier (UniqueID).
+
+
+```{r }
+library(scales)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(plotly)
+library(tidyr)
+library(reshape2)
+
+
+##############Import the dataset################################
+
+dataset <- read.csv("mod_r_data.csv")
+
+#Combine the columns into one column exclusing the UniqueToken column
+dataset_c <- data.frame(
+  UniqueID = dataset[,1],
+  Combined_Sequence = apply(dataset[, -1], 1, function(row) paste(row, collapse = " "))
+)
+
+```
+
+#Tranistion token frequncy bubble plot
+
+Token Transitions: For calculating the frequency of transitions between tokens in the concatenated sequences,     the code defines a function called calculate_transition_frequencies. The concatenated sequence is divided        into individual tokens, and the frequency of transitions between tokens is determined. A dataframe called        transition_df is created, containing two columns, Transition and Count, which reflect the frequency of           transitions between tokens and the transition itself, respectively.
+
+Later on the dataframe bubble is created which includes only the transition and the count variables which is then filtered to get the transition without the self transition and the *. 
+
+Finally the plot is build using this filtered_data dataframe which portraits the count as the bubble size and color along with each bubble having the transition token name.
+
+```{r}
+# Define a function to calculate transition state frequencies
+calculate_transition_frequencies <- function(sequence) {
+  tokens <- strsplit(sequence, " ")[[1]]
+  transition_frequencies <- table(paste(tokens[-length(tokens)], tokens[-1]))
+  transition_df <- data.frame(
+    Transition = names(transition_frequencies),
+    Count = as.numeric(transition_frequencies),
+    stringsAsFactors = FALSE
+  )
+  return(transition_df)
+}
+
+# Apply the function to the Combined_Sequence column
+transition_df <- dataset_c %>%
+  mutate(Transition_Frequencies = map(Combined_Sequence, calculate_transition_frequencies)) %>%
+  unnest(Transition_Frequencies) %>%
+  mutate(UniqueID = as.character(UniqueID))
+
+# Pivot the dataframe to wide format
+wide_df_transition <- transition_df %>%
+  pivot_wider(names_from = Transition, values_from = Count, values_fill = 0)
+
+#All transistion count including self transition 
+bubble<-transition_df %>% group_by(Transition) %>% summarise(Count = sum(Count))
+
+# Filter out rows where the transition involves the same token or both tokens are "*"
+filtered_data <- bubble %>%
+  filter(!grepl("\\b\\* \\*\\b", Transition) & !grepl("\\b(\\w) \\1\\b", Transition))
+
+# Generate random x and y coordinates for bubbles
+set.seed(123)  
+filtered_data$x_coord <- runif(nrow(filtered_data))
+filtered_data$y_coord <- runif(nrow(filtered_data))
+
+# Calculate the range of x and y coordinates
+x_range <- range(filtered_data$x_coord)
+y_range <- range(filtered_data$y_coord)
+
+# Add a buffer to the range to ensure the bubbles are clipped at the edges
+x_buffer <- 0 * diff(x_range)
+y_buffer <- 0.12 * diff(y_range)
+
+# Expand the range of x and y coordinates to include the buffer
+x_limits <- c(x_range[1] - x_buffer, x_range[2] + x_buffer)
+y_limits <- c(y_range[1] - y_buffer, y_range[2] + y_buffer)
+
+# Separate the transition into "From" and "To" tokens
+transition_df <- transition_df %>%
+  separate(Transition, into = c("From", "To"), sep = " ")
+
+# Calculate the sum of Count for each combination of From and To
+transition_matrix <- transition_df %>%
+  group_by(From, To) %>%
+  summarise(Sum_Count = sum(Count), .groups = "drop")  # Drop grouping information
+
+# Create a full set of combinations of From and To
+full_combinations <- expand.grid(From = unique(transition_matrix$From), To = unique(transition_matrix$To))
+
+# Merge with summarized data
+transition_matrix <- full_combinations %>%
+  left_join(transition_matrix, by = c("From", "To")) %>%
+  mutate(Sum_Count = replace_na(Sum_Count, 0))  # Replace missing counts with 0
+
+```
+
+
+```{r}
+# Create a bubble chart with adjusted limits for x and y axes
+ggplot(filtered_data, aes(x = x_coord, y = y_coord, size = Count, fill = as.factor(Count))) +
+  geom_point(shape = 21, color = "black", alpha = 0.6) +
+  scale_size_continuous(range = c(10, 70)) + 
+  scale_fill_manual(values = rainbow(length(unique(filtered_data$Count))), guide = "none") +  
+  geom_text(aes(label = Transition), size = 3, color = "black", vjust = 0.5) +labs(title = "Transition Count", x = NULL, y = "Transition") + theme_void() + theme(plot.margin = margin(0.1, 1, 0.1, 1, "cm")) + xlim(x_limits) + ylim(y_limits)    
+
+```
+
+
+```{r}
+# Plot the matrix with transparent tiles and light-colored borders based on count
+ggplot(data = transition_matrix, aes(x = To, y = From, fill = Sum_Count)) +
+  geom_tile(color = "white", size = 1) +  # White borders
+  geom_text(aes(label = Sum_Count), color = "black", size = 4) +  
+  scale_fill_gradient(low = "lightblue", high = "lightgreen", guide = "none") + 
+  labs(x = "To", y = "From", fill = "Count") +
+  scale_x_discrete(position = "top") +  
+  scale_y_discrete(limits = rev(unique(transition_matrix$To))) +  
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1))
+
+```
+
+
+#Start End Token Frequency bubble plot
+
+The process begins by extracting the start and end tokens from the Combined_Sequence column of the dataset.
+
+After extracting the start and end tokens, the next step is to count the occurrences of each unique start and end combination. This provides insights into which combination of start and end tokens are the most common or frequent within the dataset
+
+Once the start and end token along with the occurrence is acquired in this case in the dataframe start_end_df a bubble plot is created where the size and color represent the count and the bubble is labeled with the name of the tokens 
+
+
+```{r}
+#########################Start and End Frequency###############################
+
+# Extract start and end tokens from Combined_Sequence column
+start_end <- sapply(dataset_c$Combined_Sequence, function(seq) {
+  tokens <- unlist(strsplit(seq, " "))
+  
+  tokens <- tokens[tokens != "*"]
+  
+  if (length(tokens) > 1) {
+    start <- tokens[1]
+    end <- tokens[length(tokens)]
+    paste(start, end, sep = " ")
+  } else {
+    NA
+  }
+})
+
+start_end_counts <- table(start_end)
+
+start_end_counts <- start_end_counts[!is.na(names(start_end_counts))]
+
+start_end_df <- data.frame(start_end = names(start_end_counts), count = as.vector(start_end_counts))
+
+start_end_df <- start_end_df[order(-start_end_df$count), ] %>% arrange(desc(count))
+
+
+# Generate random x and y coordinates for bubbles
+set.seed(123)  
+start_end_df$x_coord <- runif(nrow(start_end_df))
+start_end_df$y_coord <- runif(nrow(start_end_df))
+
+```
+
+
+```{r}
+# Create a bubble chart with random coordinates and pastel colors for different sizes
+ggplot(start_end_df, aes(x = x_coord, y = y_coord, size = count, fill = as.factor(count))) +
+  geom_point(shape = 21, color = "black", alpha = 0.6) +
+  scale_size_continuous(range = c(10, 70)) +  
+  scale_fill_manual(values = hue_pal()(length(unique(start_end_df$count))), guide = "none") +  
+  geom_text(aes(label = start_end), size = 3, color = "black", vjust = 0.5) + 
+  labs(title = "Frequency of Start-End Combinations", x = NULL, y = "Frequency") +  
+  theme_void() +
+  theme(plot.margin = margin(0.1, 1, 0.1, 1, "cm")) 
+
+```
+#Single token frequncy boxplot
+
+To determine the frequency of each token in the combined sequences, the code defines the      function calculate_token_frequencies. The combined sequence is divided into separate tokens, and each token's     frequency is counted. A dataframe called token_df is then created, containing two columns called Token and       Count, which stand for the token and its frequency, respectively.
+
+The distribution of the tokens is done using a boxplot where the X axis represents the Tokens and the Y axis represents the Count of that specific token.
+
+```{r}
+# Function for calculating the Token Occurences 
+calculate_token_frequencies <- function(sequence) {
+  # Split the sequence into individual tokens
+  tokens <- strsplit(sequence, " ")[[1]]
+  # Count the frequency of each token
+  token_frequencies <- table(tokens)
+  # Create a dataframe with token frequencies
+  token_df <- data.frame(
+    Token = names(token_frequencies),
+    Count = as.numeric(token_frequencies),
+    stringsAsFactors = FALSE
+  )
+  return(token_df)
+}
+
+#Calling the above function
+token_df <- dataset_c %>%
+  mutate(Token_Frequencies = map(Combined_Sequence, calculate_token_frequencies)) %>%
+  unnest(Token_Frequencies) %>%  mutate(UniqueID = as.character(UniqueID))
+
+
+box_plot<-ggplot(token_df, aes(x=Token, y=Count))+ geom_boxplot()+theme_minimal() +
+  labs(title = "Distribution of Token Frequencies",
+       x = "Token",
+       y = "Count") + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```

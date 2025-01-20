@@ -1,0 +1,231 @@
+---
+title: "EDA3"
+output: html_document
+date: "2024-05-20"
+---
+
+The following code block loads necessary libraries for data manipulation, text processing, and graph visualization. It reads a dataset from a CSV file and processes it to create a column of concatenated non-NA traces. It then calculates the length of each trace and removes any traces without valid symbols. The code counts the occurrences of each token type and defines a function to condense contiguous sequences of the same symbol into a single symbol. It adds this condensed trace to the dataset and calculates the frequency of each token in the condensed traces. The code also identifies transitions between symbols in the traces, tidies up the transitions, and creates graph objects to visualize these transitions. Finally, it generates bigrams from the sequences, counts their occurrences, and creates a graph object for the bigrams.
+
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tidytext)
+library(tidyverse)
+library(igraph)
+library(ggraph)
+
+### Read in dataset
+dataset <- read.csv("mod_r_data.csv", header = TRUE, check.names = FALSE)
+
+###Start concat_non_na function: Dataset concatentation function
+concat_non_na <- function(x, sep = "-") {
+  paste(na.omit(x), collapse = sep)
+}
+###End concat_non_na function
+
+###Concatenate dataset and add concatenated traces as an end column to the dataset
+dataset$Traces <- apply(dataset[,-1], 1, concat_non_na, sep = "-")
+
+###Create new dataset (final_data) comprising Trace ID and concatenated traces
+final_data <- dataset %>% select(UniqueID, Traces) 
+colnames(final_data)[1] <- "Sequence_ID"
+
+###Calculate each trace length (ex-NA) and add trace lengths as a third column to ###final_data  
+final_data$Trace_Length <- sapply(strsplit(final_data$Traces, "-"), function(x) sum(x != "*" & nchar(x) > 0))
+
+###Remove traces with no symbols from the final_data dataset
+final_data <- final_data[final_data$Trace_Length != 0, ]
+
+###Count the number of each token types in the dataset 
+token_counts <- final_data %>%
+  separate_rows(Traces, sep = "-") %>%
+  group_by(Traces) %>%
+  summarise(Count = n()) %>%
+  ungroup() %>%
+  arrange(desc(Count))
+
+###Start condense_trace function: This function condenses contiguous sequences of ###one symbol into that symbol with a separator "-" between symbols. Contiguous ###blanks are represented by a "*".
+condense_trace <- function(trace) {
+  
+  trace <- gsub("--", "-*-", trace) # NA -> * placeholder Token
+  parts <- unlist(strsplit(trace, "-"))
+  condensed <- c()  
+  previous <- NULL
+  
+  for (part in parts) {
+    if (part != "" && !identical(part, previous)) {
+      condensed <- c(condensed, part)
+      previous <- part
+    }
+  }
+  
+  condensed_trace <- paste(condensed, collapse = "-")
+  
+  if (startsWith(condensed_trace, "*") && endsWith(condensed_trace, "*")) {
+    if (!startsWith(condensed_trace, "*-")) {
+      condensed_trace <- paste0("-*", condensed_trace)
+    }
+    if (!endsWith(condensed_trace, "-*")) {
+      condensed_trace <- paste0(condensed_trace, "-*")
+    }
+  }
+  
+  return(condensed_trace)
+}
+### End condense_trace function
+
+### Adding condensed trace column to final_data
+final_data$CT <- sapply(final_data$Traces, condense_trace)
+
+### Calculating the count of symbols in the dataset when treating contiguous 
+### sequences of the same symbol as one of that symbol   
+Tokens_CT <- unlist(str_split(final_data$CT, "-"))
+Token_frequencies_CT <- table(Tokens_CT)
+Token_frequencies_CT <- as.data.frame(Token_frequencies_CT)
+
+###Summing the token count for each trace where each sequence of the same symbols ### is treated as one of that symbol and appending as a new column to final_data
+final_data$CT_Length <- sapply(strsplit(final_data$CT, "-"), function(x) sum(nchar(x) > 0))
+
+### Parse sequences and capture all transition pairs (between symbols) in the full ### trace (not the condensed trace) 
+transitions_list <- lapply(final_data$Traces, function(sequence) {
+  codes <- strsplit(sequence, "-")[[1]]
+  # Create pairs of transitions
+  pairs <- paste(head(codes, -1), tail(codes, -1), sep = "->")
+  return(pairs)
+})
+
+### Turn transitions list into a vector
+transitions <- unlist(transitions_list)
+
+### Count of all unique transtions types and set out in a dataframe with the symbol ### transition type (from symbol source to symbol target) and count (frequency)
+transition_counts <- table(transitions)
+transition_df <- as.data.frame(transition_counts, stringsAsFactors = FALSE)
+names(transition_df) <- c("Transition", "Frequency")
+
+### Start fix_transition function: This function tidy's up the transition list by ### replacing blanks with "*"
+fix_transition <- function(trans) {
+  # If '->' is at the start of the string, prepend '*'
+  trans <- ifelse(grepl("^->", trans), paste0("*", trans), trans)
+  # If '->' is at the end of the string, append '*'
+  trans <- ifelse(grepl("->$", trans), paste0(trans, "*"), trans)
+  return(trans)
+}
+### End fix_transition function
+
+### Tidying up transitions usingfix_transition function
+transition_df$Transition <- sapply(transition_df$Transition, fix_transition)
+
+
+### Parse sequences and identify transitions: create a list of each transition for ### each trace where traces are in a list (list of lists)
+transitions_list_CT <- lapply(final_data$CT, function(sequence) {
+  codes <- strsplit(sequence, "-")[[1]]
+  # Create pairs of transitions
+  pairs <- paste(head(codes, -1), tail(codes, -1), sep = "->")
+  return(pairs)
+})
+
+### Vectorise transitions for each trace list of transitions
+transitions_CT <- unlist(transitions_list_CT)
+
+### Count transitions in the vector
+transition_counts_CT <- table(transitions_CT)
+transition_CT <- as.data.frame(transition_counts_CT, stringsAsFactors = FALSE)
+names(transition_CT) <- c("Transition", "Frequency")
+
+### 
+transition_df$Source <- sapply(strsplit(as.character(transition_df$Transition), "->"), `[`, 1)
+transition_df$Target <- sapply(strsplit(as.character(transition_df$Transition), "->"), `[`, 2)
+
+### Create an igraph graph from the dataframe transition_df
+graph <- graph_from_data_frame(d = transition_df[, c("Source", "Target")], directed = TRUE)
+
+### Add edge weights (Frequency)
+E(graph)$weight <- transition_df$Frequency
+
+transition_CT$Source <- sapply(strsplit(as.character(transition_CT$Transition), "->"), `[`, 1)
+transition_CT$Target <- sapply(strsplit(as.character(transition_CT$Transition), "->"), `[`, 2)
+
+### Create an igraph graph from the dataframe
+graph_CT <- graph_from_data_frame(d = transition_CT[, c("Source", "Target")], directed = TRUE)
+
+### Add edge weights (Frequency)
+E(graph_CT)$weight <- transition_CT$Frequency
+
+
+# Function to generate bigrams from a sequence
+generate_bigrams <- function(sequence) {
+  elements <- strsplit(sequence, "-")[[1]]
+  bigrams <- tibble(bigram = paste(head(elements, -1), tail(elements, -1), sep = "-"))
+  return(bigrams)
+}
+
+# Function to generate bigrams from a sequence
+generate_bigrams <- function(sequence) {
+  elements <- unlist(strsplit(sequence, "-"))
+  bigrams <- tibble(from = head(elements, -1), to = tail(elements, -1))
+  return(bigrams)
+}
+
+# Apply the function to all sequences and combine the results
+bigrams <- final_data %>%
+  mutate(CT_bigrams = map(CT, generate_bigrams)) %>%
+  unnest(CT_bigrams)
+
+# Count bigram occurrences
+bigram_counts <- bigrams %>%
+  count(from, to, sort = TRUE)
+
+# Create the graph object
+bigram_graph <- graph_from_data_frame(bigram_counts)
+
+```
+
+This code block creates a directed graph to visualize the transition states.
+
+```{r}
+layout <- layout_with_fr(graph)
+
+plot(graph, layout = layout,
+     edge.arrow.size = 0.3,
+     vertex.label.cex = 1,
+     vertex.size = sqrt(degree(graph)) * 3,    
+     edge.label.cex = 0.3,  
+     vertex.color = "green",
+     main = "Transition States")
+```
+This code block creates a directed graph to visualize the transition states (Condensed Traces).
+
+```{r}
+
+layout <- layout_with_fr(graph_CT)
+
+plot(graph_CT, layout = layout,
+     edge.arrow.size = 0.3,
+     vertex.label.cex = 1,
+     vertex.size = sqrt(degree(graph)) * 6,    
+     edge.label.cex = 0.3,  
+     vertex.color = "green",
+     main = "Transition States (Condensed Traces)")
+
+```
+This code block visualizes the bigram directed graph.
+
+```{r}
+
+# Arrow specification
+a <- grid::arrow(type = "closed", length = unit(.07, "inches"))
+
+# Plot the bigram graph
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 3) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void() +
+  ggtitle("Bigram Directed Graph")
+
+```
+

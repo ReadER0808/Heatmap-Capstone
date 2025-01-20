@@ -1,0 +1,558 @@
+---
+title: "Modelling_BasketAnalysis"
+author: "Heatmap Capstone Project Team"
+date: "2024-05-12"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+## Introduction
+
+This document is designed to perform a detailed basket analysis for
+identifying patterns and associations within transaction data. It
+utilizes various R packages to prepare data, analyze sequence patterns,
+and generate association rules. The aim is to provide insights into
+pattern recognition which can help in decision-making processes. This
+document is structured to be accessible even to those with minimal
+technical background in data analysis.
+
+### Library installation
+
+The code block begins by loading necessary libraries for data
+manipulation, visualization, and association rule mining. These include
+`dplyr`, `tidyr`, `tidyverse`, `arulesSequences`, `arules`, `arulesViz`,
+`knitr`, and `digest`.
+
+### Load dataset
+
+The following code reads a CSV file containing the dataset using the
+`read.csv()` function. The file path is specified as
+`directory/mod_r_data.csv` for concise data and `directory/mod_data.csv`
+for full data.
+
+If a custom file is used, it should follow a specific structure: - The
+first column should contain IDs with the column name `UniqueID`. -
+Subsequent columns should represent days, named numerically starting
+from 1.
+
+For example, the structure should resemble:
+
+| UniqueID | 1   | 2   | 3   | ... |
+|----------|-----|-----|-----|-----|
+| id1      |     |     |     |     |
+| id2      |     |     |     |     |
+| ...      |     |     |     |     |
+
+The `header` parameter is set to `TRUE` to indicate that the first row
+contains column names, and `check.names` is set to `FALSE` to avoid
+column name validation.
+
+The dataset is then stored in the `dataset` variable for further
+analysis.
+
+```{r warning=FALSE}
+
+###########################################
+##### Dataset import ######################
+###########################################
+
+### Library installation 
+
+
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(arulesSequences)
+library(arules)
+library(arulesViz)
+library(knitr)
+library(digest)
+
+# Load dataset full data / concise data
+dataset <- read.csv("mod_r_data.csv", header = TRUE, check.names = FALSE)
+
+```
+
+### Pre-Processing
+
+The following code block focuses on preprocessing the data to prepare it
+for further analysis:
+
+Convert data into long data format The code block begins by converting
+the dataset into long format using the `pivot_longer()` function from
+the `tidyr` package. This function reshapes the dataset so that each row
+represents a single observation (combination of UniqueID, Day, and
+Token). Missing or empty values in the Token column are replaced with
+NA.
+
+Function to create event log Next, a custom function
+`analyze_patterns_enhanced()` is defined to analyze the patterns in the
+long-format data. This function iterates over each UniqueID, identifies
+change points in the Token column (indicating a change in the pattern),
+and creates a new dataframe `enhanced_results_df` containing information
+about the patterns observed for each UniqueID.
+
+Regenerate Event_Log using the updated function The
+`analyze_patterns_enhanced()` function is applied to the long-format
+data to regenerate the event log `Event_Log`, which contains information
+about the patterns observed in the data.
+
+Calculate desired percentiles for PatternLength Desired percentiles
+(5th, 25th, 50th, 75th, and 95th) for the PatternLength variable in the
+event log are calculated using the `quantile()` function.
+
+Define custom breaks and labels based on calculated percentiles Custom
+breaks and labels are defined based on the calculated percentiles to
+categorize the PatternLength variable into discrete intervals. These
+intervals are labeled as "Very Short," "Short," "Medium," "Long," "Very
+Long," and "Extremely Long."
+
+Categorize PatternLength using the defined breaks and labels The `cut()`
+function is used to categorize the PatternLength variable into the
+predefined intervals using the defined breaks and labels.
+
+Create a new item label that combines Token and PatternLengthCat A new
+variable `itemLabel` is created by concatenating the Token and
+PatternLengthCat variables with an underscore separator. This variable
+represents each item in the transaction dataset and incorporates
+information about both the Token and the categorized PatternLength.
+
+Create transactions from the item labels Finally, the transaction
+dataset `transactions_ME` is created by splitting the `itemLabel`
+variable by UniqueID, resulting in a list of transactions for each
+UniqueID. The transactions are then converted into a transaction object
+using the `as()` function.
+
+This preprocessing step is crucial for organizing and structuring the
+data in a way that facilitates subsequent analysis, such as association
+rule mining.
+
+```{r warning=FALSE}
+
+###########################################
+##### Pre-Processing ######################
+###########################################
+
+
+# Convert data into long data format
+long_data <- dataset %>%
+  pivot_longer(
+    cols = -UniqueID,
+    names_to = "Day",
+    values_to = "Token"
+  ) %>%
+  mutate(
+    Day = as.integer(Day),
+    Token = ifelse(Token == "" | is.na(Token), NA, Token)
+  ) %>%
+  drop_na(Token)
+
+# Function to create event log
+analyze_patterns_enhanced <- function(long_data) {
+  
+  df_list <- split(long_data, f = long_data$UniqueID)
+  
+  enhanced_results_df <- data.frame(UniqueID = character(), StartDay = integer(), EndDay = integer(),
+                                    Token = character(), PatternLength = integer(), stringsAsFactors = FALSE)
+  
+  for(UniqueID in names(df_list)) {
+    current_df <- df_list[[UniqueID]]
+    
+    change_points <- which(c(TRUE, as.character(current_df$Token)[-1] != head(as.character(current_df$Token), -1)))
+    
+    for(i in seq_along(change_points)) {
+      
+      if (i < length(change_points)) {
+        end_day_index <- change_points[i + 1] - 1
+      } else {
+        end_day_index <- nrow(current_df)
+      }
+      
+      pattern_length <- end_day_index - change_points[i] + 1
+      
+      enhanced_results_df <- rbind(enhanced_results_df, data.frame(
+        UniqueID = UniqueID,
+        StartDay = current_df$Day[change_points[i]],
+        EndDay = current_df$Day[end_day_index],
+        Token = current_df$Token[change_points[i]],
+        PatternLength = pattern_length,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  
+  return(enhanced_results_df)
+}
+
+
+# Regenerate Event_Log using the updated function
+Event_Log <- analyze_patterns_enhanced(long_data)
+
+# Calculate desired percentiles for PatternLength
+percentiles <- quantile(Event_Log$PatternLength, probs = c(0.05, 0.25, 0.50, 0.75, 0.95), na.rm = TRUE)
+
+# Define custom breaks and labels based on calculated percentiles
+breaks <- c(0, percentiles["5%"], percentiles["25%"], percentiles["50%"], percentiles["75%"], percentiles["95%"], max(Event_Log$PatternLength, na.rm = TRUE))
+labels <- c("Very Short", "Short", "Medium", "Long", "Very Long", "Extremely Long")
+
+# Categorize PatternLength using the defined breaks and labels
+Event_Log$PatternLengthCat <- cut(Event_Log$PatternLength,
+                                  breaks = breaks,
+                                  labels = labels,
+                                  include.lowest = TRUE)
+
+# Create a new item label that combines Token and PatternLengthCat
+Event_Log$itemLabel <- with(Event_Log, paste(Token, PatternLengthCat, sep="_"))
+
+# Create transactions from the item labels
+transactions_list_ME <- split(Event_Log$itemLabel, Event_Log$UniqueID)
+transactions_ME <- as(transactions_list_ME, "transactions")
+
+```
+
+### Pattern Length Analysis
+
+The following code block provides an analysis of the characteristics of
+pattern length to inform the user. This information is crucial as these
+characteristics are integrated with tokens to create a new item set for
+further analysis:
+
+Display the percentile values in a readable format The code block begins
+by displaying the percentile values of the Pattern Length distribution
+in a readable format. Each category of pattern length (Very Short,
+Short, Medium, Long, Very Long, and Extremely Long) is presented along
+with its corresponding range of values.
+
+Next, the code block displays the distribution of Pattern Length
+Categories using the `table()` function. This provides an overview of
+the frequency of occurrence for each category (e.g., Very Short, Short,
+Medium, etc.) in the event log.
+
+```{r warning=FALSE}
+
+# Display the percentile values in a readable format
+cat("Pattern Length Distribution Percentiles:\n")
+cat(sprintf("Very Short: 0 - %.0f\n", percentiles["5%"]))
+cat(sprintf("Short: %.0f - %.0f\n", percentiles["5%"] + 1, percentiles["25%"]))
+cat(sprintf("Medium: %.0f - %.0f\n", percentiles["25%"] + 1, percentiles["50%"]))
+cat(sprintf("Long: %.0f - %.0f\n", percentiles["50%"] + 1, percentiles["75%"]))
+cat(sprintf("Very Long: %.0f - %.0f\n", percentiles["75%"] + 1, percentiles["95%"]))
+cat(sprintf("Extremely Long: %.0f - %.0f\n", percentiles["95%"] + 1, max(Event_Log$PatternLength, na.rm = TRUE)))
+
+
+cat("\nDistribution of Pattern Length Categories:\n")
+print(table(Event_Log$PatternLengthCat))
+```
+
+### Association Rule Mining
+
+This code block facilitates the user's interaction with the association
+rule mining process and displays the top association rules based on
+user-defined parameters:
+
+Get user input The code block prompts the user to input three
+parameters: minimum support, minimum confidence, and the number of top
+rules to display. These parameters are essential for defining the
+criteria for mining association rules.
+
+Validate input The user input is then validated to ensure that it falls
+within acceptable ranges. If any of the input values are invalid (e.g.,
+not numeric, out of range), an error message is displayed, and the code
+execution is halted.
+
+Mine association rules Once the input is validated, association rules
+are mined from the transaction dataset `transactions_ME` using the
+`apriori()` function from the `arules` package. The parameters `supp`
+and `conf` are set to the user-defined minimum support and confidence
+values, respectively.
+
+Sort rules by lift and get the top rules The mined association rules are
+sorted based on lift, and the top rules specified by the user are
+selected for further analysis.
+
+Create a data frame to display The selected top association rules are
+stored in a data frame `rules_df`, containing information about the
+antecedents (`LHS`), consequents (`RHS`), support, confidence, lift, and
+count of each rule.
+
+Use kable to create a markdown table Finally, the `kable()` function
+from the `knitr` package is used to generate a markdown table displaying
+the top association rules. The table is formatted with captions and
+markdown syntax for easy readability and integration into reports or
+documents.
+
+### Interpretation
+
+This analysis presents association rules where actions are analyzed to
+identify patterns based on their lengths, categorized by percentiles:
+
+Very Short (≤5%), Short (5%-25%), Medium (25%-50%), Long (50%-75%), Very
+Long (75%-95%), Extremely Long (\>95%)
+
+Key Metrics:
+
+Support: Percentage of total sequences that contain both the Left-Hand
+Side (LHS) and Right-Hand Side (RHS), reflecting the rule's prevalence.
+
+Confidence: Probability that the RHS appears when LHS is present,
+indicating reliability.
+
+Lift: Ratio showing how much more often the LHS and RHS co-occur than
+expected if they were independent. A lift greater than 1 indicates a
+strong association.
+
+**Note:** Items in the LHS of each rule are not necessarily in sequence;
+this analysis categorizes and combines actions based on their lengths
+rather than their order, as it does not involve sequence rule mining.
+
+```{r warning=FALSE}
+# Get user input
+
+supp_input <- as.numeric(readline(prompt = "Enter minimum support (e.g., 0.01 for 1%): "))
+conf_input <- as.numeric(readline(prompt = "Enter minimum confidence (e.g., 0.8 for 80%): "))
+top_rules_input <- as.integer(readline(prompt = "Enter the number of top rules to display: "))
+
+
+# Validate input
+if(is.na(supp_input) || supp_input < 0 || supp_input > 1) {
+  stop("Invalid input for support. Please enter a value between 0 and 1.")
+}
+if(is.na(conf_input) || conf_input < 0 || conf_input > 1) {
+  stop("Invalid input for confidence. Please enter a value between 0 and 1.")
+}
+if(is.na(top_rules_input) || top_rules_input <= 0) {
+  stop("Invalid input for number of top rules. Please enter a positive integer.")
+}
+
+# Mine association rules
+rules_ME <- apriori(transactions_ME, parameter = list(supp = supp_input, conf = conf_input))
+
+# Sort rules by lift
+sorted_rules <- sort(rules_ME, by = "lift", decreasing = TRUE)
+
+# Sort rules by lift and get the top rules
+top_rules <- sort(rules_ME, by = "lift")[1:top_rules_input]
+
+# Create a data frame to display
+rules_df <- data.frame(
+  LHS = labels(lhs(top_rules)),
+  RHS = labels(rhs(top_rules)),
+  Support = quality(top_rules)$support,
+  Confidence = quality(top_rules)$confidence,
+  Lift = quality(top_rules)$lift,
+  Count = quality(top_rules)$count
+)
+
+# Use kable to create a markdown table
+kable(rules_df, format = "markdown", caption = "Top Association Rules by Lift")
+```
+
+### Sequence Mining
+
+This code block focuses on preparing the data for sequence mining by
+organizing it into sessions and transactions:
+
+Using UniqueID as sequence identifier The code block starts by assigning
+a unique event ID (`eventID`) to each event within the sequence for
+every `UniqueID`. This ensures that events within each sequence are
+ordered correctly.
+
+Convert UniqueID to factors and integers The `UniqueID` column is
+converted to a factor and then to integers. This ensures that the
+`UniqueID` is treated as a categorical variable with a numeric
+representation suitable for sequence analysis.
+
+Create sessions dataframe A dataframe `sessions_df` is created to store
+session information, including `UniqueID`, `eventID`, and `itemLabel`
+(representing items within the session).
+
+Convert UniqueID column to integers A custom function
+`convert_uniqueID()` is defined to convert the `UniqueID` column in the
+`sessions_df` dataframe to integers. This ensures consistent handling of
+the `UniqueID` column across different data types.
+
+Apply the function to the dataframe The `convert_uniqueID()` function is
+applied to the `sessions_df` dataframe to convert the `UniqueID` column
+to integers.
+
+Create transactions object The `sessions_df` dataframe is transformed
+into a transactions object `sessions` by selecting the `itemLabel`
+column as the items in each transaction.
+
+Reset transactions information Transaction information is reset to
+include `transactionID`, `sequenceID`, and `eventID` for each
+transaction. This information is essential for sequence mining
+algorithms to identify patterns and sequences within the data.
+
+Clean item labels The item labels in the transactions object are cleaned
+by removing any prefixes (e.g., "items=").
+
+These steps prepare the data for sequence mining analysis, enabling the
+identification of sequential patterns and dependencies within the
+dataset.
+
+```{r warning=FALSE}
+# Using UniqueID as sequence identifier
+Event_Log$eventID <- ave(Event_Log$StartDay, Event_Log$UniqueID, FUN = seq_along)
+rownames(Event_Log) <- seq_along(1:nrow(Event_Log))
+
+Event_Log$itemLabel <- as.factor(Event_Log$itemLabel)
+
+
+sessions_df <- data.frame(
+  UniqueID = Event_Log$UniqueID,
+  EventID = Event_Log$eventID,
+  itemLabel = Event_Log$itemLabel
+)
+
+# Order sessions_df by UniqueID and EventID
+sessions_df <- sessions_df[order(sessions_df$UniqueID, sessions_df$EventID), ]
+
+convert_uniqueID <- function(data_frame, id_column) {
+  # Ensure the ID column is treated as character first to handle any non-numeric issues
+  data_frame[[id_column]] <- as.character(data_frame[[id_column]])
+
+  # Convert the specified ID column to a factor
+  data_frame[[id_column]] <- as.factor(data_frame[[id_column]])
+  
+  # Convert the factor to integer which will number from 1 to the number of levels
+  data_frame[[id_column]] <- as.integer(data_frame[[id_column]])
+  
+  return(data_frame)
+}
+
+# Apply the function to your dataframe
+sessions_df <- convert_uniqueID(sessions_df, "UniqueID")
+
+sessions_df$UniqueID <- as.integer(sessions_df$UniqueID)
+sessions_df$EventID <- as.integer(sessions_df$EventID)
+sessions_df$itemLabel <- as.character(sessions_df$itemLabel)
+  
+   
+# Now create the transactions object
+sessions <- as(sessions_df %>% transmute(items = itemLabel), "transactions")
+
+# Reset transactions information
+transactionInfo(sessions) <- data.frame(
+  transactionID = seq_along(sessions_df$UniqueID),
+  sequenceID = sessions_df$UniqueID,
+  eventID = sessions_df$EventID
+)
+
+itemLabels(sessions) <- str_replace_all(itemLabels(sessions), "items=", "")
+
+sessions@itemInfo$variables <- as.character(sessions@itemInfo$variables)
+sessions@itemInfo$levels <- as.character(sessions@itemInfo$levels)
+
+```
+
+### Sequence Rule Mining
+
+This code block enables the user to input parameters for mining sequence
+rules and displays the top sequence rules based on user-defined
+criteria:
+
+Take user inputs for parameters The code block prompts the user to input
+three parameters: minimum support, minimum confidence, and the number of
+top rules to display. These parameters are essential for defining the
+criteria for mining sequence rules.
+
+Validate input The user input is then validated to ensure that it falls
+within acceptable ranges. If any of the input values are invalid (e.g.,
+not numeric, out of range), an error message is displayed, and the code
+execution is halted.
+
+Execute cspade with user-defined parameters The `cspade()` function from
+the `arulesSequences` package is executed to mine frequent sequences
+from the transaction data (`sessions`) with the user-defined minimum
+support.
+
+Execute ruleInduction with user-defined parameters The `ruleInduction()`
+function is executed to generate sequence rules from the frequent
+sequences mined in the previous step. User-defined minimum confidence is
+used as a threshold for rule generation.
+
+Inspect the specified number of top sequence rules The top sequence
+rules specified by the user are extracted for further analysis.
+
+Create a data frame to display the sequence rules The top sequence rules
+are stored in a data frame `sequence_rules_df`, containing information
+about the left-hand side (`LHS`) and right-hand side (`RHS`) of the
+rules, as well as their support, confidence, and lift (if available).
+
+Use kable to create a markdown table Finally, the `kable()` function
+from the `knitr` package is used to generate a markdown table displaying
+the top sequence rules. The table is formatted with captions and
+markdown syntax for easy readability and integration into reports or
+documents.
+
+### Interpretation
+
+This analysis presents association rules where sequences of actions are
+analyzed to identify patterns based on their lengths, categorized by
+percentiles:
+
+Very Short (≤5%), Short (5%-25%), Medium (25%-50%), Long (50%-75%), Very
+Long (75%-95%), Extremely Long (\>95%)
+
+Key Metrics:
+
+Support: Percentage of total sequences that contain both the Left-Hand
+Side (LHS) and Right-Hand Side (RHS), reflecting the rule's prevalence.
+
+Confidence: Probability that the RHS appears when LHS is present,
+indicating reliability.
+
+Lift: Ratio showing how much more often the LHS and RHS co-occur than
+expected if they were independent. A lift greater than 1 indicates a
+strong association.
+
+**Note:** It is suggested to set the minimum support (`supp_input`) to
+0.1 or greater for faster execution. However, if there are no
+constraints on memory or processing power on the user's machine, they
+could use any support value as they please.
+
+```{r warning=FALSE}
+
+# Take user inputs for parameters
+support <- as.numeric(readline(prompt = "Enter minimum support (e.g., 0.01 for 1%): "))
+confidence <- as.numeric(readline(prompt = "Enter minimum confidence (e.g., 0.8 for 80%): "))
+num_rules <- as.integer(readline(prompt = "Enter the number of top rules to display:  "))
+
+# Validate input
+if(is.na(support) || support < 0 || support > 1) {
+  stop("Invalid input for support. Please enter a value between 0 and 1.")
+}
+if(is.na(confidence) || confidence < 0 || confidence > 1) {
+  stop("Invalid input for confidence. Please enter a value between 0 and 1.")
+}
+if(is.na(num_rules) || num_rules <= 0) {
+  stop("Invalid input for number of top rules. Please enter a positive integer.")
+}
+
+# Execute cspade with user-defined parameters
+itemsets <- cspade(sessions, 
+                   parameter = list(support = support), 
+                   control = list(verbose = TRUE)
+)
+
+# Sort the rules by lift
+sorted_sequence_rules <- sort(sequence_rules, by = "lift", decreasing = TRUE)
+
+# Inspect the specified number of top sequence rules
+top_sequence_rules <- sorted_sequence_rules[1:num_rules]
+
+# Create a data frame to display the sequence rules
+sequence_rules_df <- data.frame(
+  LHS = labels(lhs(top_sequence_rules)),   # Extract the left-hand side of the rules
+  RHS = labels(rhs(top_sequence_rules)),   # Extract the right-hand side of the rules
+  Support = quality(top_sequence_rules)$support,  # Extract the support of the rules
+  Confidence = quality(top_sequence_rules)$confidence,  # Extract the confidence of the rules
+  Lift = quality(top_sequence_rules)$lift  # Extract the lift of the rules (if available)
+)
+
+# Use kable to create a markdown table
+kable(sequence_rules_df, format = "markdown", caption = "Top Sequence Rules by Lift")
+```

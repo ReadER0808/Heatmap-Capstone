@@ -1,0 +1,370 @@
+---
+title: "EDA1"
+output: html_document
+date: "2024-05-16"
+---
+
+The script processes a dataset mod_data.csv/mod_r_data.csv, performs data cleaning, transforms categorical and numerical columns, and generates various summary statistics and outputs.
+
+### Prerequisites
+R installed on your computer.
+Required R packages: dplyr, tidyr, stringr, kableExtra, ggplot2, scales, forcats.
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+### Read in dataset
+dataset <- read.csv("mod_r_data.csv", header = TRUE, check.names = FALSE)
+
+###Start concat_non_na function: Dataset concatentation function
+concat_non_na <- function(x, sep = "-") {
+  paste(na.omit(x), collapse = sep)
+}
+###End concat_non_na function
+
+###Concatenate dataset and add concatenated traces as an end column to the dataset
+dataset$Traces <- apply(dataset[,-1], 1, concat_non_na, sep = "-")
+
+###Create new dataset (final_data) comprising Trace ID and concatenated traces
+final_data <- dataset %>% select(UniqueID, Traces) 
+colnames(final_data)[1] <- "Sequence_ID"
+
+###Calculate each trace length (ex-NA) and add trace lengths as a third column to ###final_data  
+final_data$Trace_Length <- sapply(strsplit(final_data$Traces, "-"), function(x) sum(x != "*" & nchar(x) > 0))
+
+###Remove traces with no symbols from the final_data dataset
+final_data <- final_data[final_data$Trace_Length != 0, ]
+
+###Count the number of each token types in the dataset 
+token_counts <- final_data %>%
+  separate_rows(Traces, sep = "-") %>%
+  group_by(Traces) %>%
+  summarise(Count = n()) %>%
+  ungroup() %>%
+  arrange(desc(Count)) %>%
+  rename(Tokens = Traces)
+
+###Start condense_trace function: This function condenses contiguous sequences of ###one symbol into that symbol with a separator "-" between symbols. Contiguous ###blanks are represented by a "*".
+condense_trace <- function(trace) {
+  
+  trace <- gsub("--", "-*-", trace) # NA -> * placeholder Token
+  parts <- unlist(strsplit(trace, "-"))
+  condensed <- c()  
+  previous <- NULL
+  
+  for (part in parts) {
+    if (part != "" && !identical(part, previous)) {
+      condensed <- c(condensed, part)
+      previous <- part
+    }
+  }
+  
+  condensed_trace <- paste(condensed, collapse = "-")
+  
+  if (startsWith(condensed_trace, "*") && endsWith(condensed_trace, "*")) {
+    if (!startsWith(condensed_trace, "*-")) {
+      condensed_trace <- paste0("-*", condensed_trace)
+    }
+    if (!endsWith(condensed_trace, "-*")) {
+      condensed_trace <- paste0(condensed_trace, "-*")
+    }
+  }
+  
+  return(condensed_trace)
+}
+### End condense_trace function
+
+### Adding condensed trace column to final_data
+final_data$CT <- sapply(final_data$Traces, condense_trace)
+
+### Calculating the count of symbols in the dataset when treating contiguous 
+### sequences of the same symbol as one of that symbol   
+Tokens_CT <- unlist(str_split(final_data$CT, "-"))
+Token_frequencies_CT <- table(Tokens_CT)
+Token_frequencies_CT <- as.data.frame(Token_frequencies_CT)
+
+###Summing the token count for each trace where each sequence of the same symbols ### is treated as one of that symbol and appending as a new column to final_data
+final_data$Trace_Length <- sapply(strsplit(final_data$Traces, "-"), function(x) sum(x != "*" & nchar(x) > 0))
+
+###Summing the token count for each trace where each sequence of the same symbols ### is treated as one of that symbol and appending as a new column to final_data
+final_data$CT_Length <- sapply(strsplit(final_data$CT, "-"), function(x) sum(x != "*" & nchar(x) > 0))
+
+### Parse sequences and capture all transition pairs (between symbols) in the full ### trace (not the condensed trace) 
+transitions_list <- lapply(final_data$Traces, function(sequence) {
+  codes <- strsplit(sequence, "-")[[1]]
+  # Create pairs of transitions
+  pairs <- paste(head(codes, -1), tail(codes, -1), sep = "->")
+  return(pairs)
+})
+
+### Turn transitions list into a vector
+transitions <- unlist(transitions_list)
+
+### Count of all unique transtions types and set out in a dataframe with the symbol ### transition type (from symbol source to symbol target) and count (frequency)
+transition_counts <- table(transitions)
+transition_df <- as.data.frame(transition_counts, stringsAsFactors = FALSE)
+names(transition_df) <- c("Transition", "Frequency")
+
+### Start fix_transition function: This function tidy's up the transition list by ### replacing blanks with "*"
+fix_transition <- function(trans) {
+  # If '->' is at the start of the string, prepend '*'
+  trans <- ifelse(grepl("^->", trans), paste0("*", trans), trans)
+  # If '->' is at the end of the string, append '*'
+  trans <- ifelse(grepl("->$", trans), paste0(trans, "*"), trans)
+  return(trans)
+}
+### End fix_transition function
+
+### Tidying up transitions usingfix_transition function
+transition_df$Transition <- sapply(transition_df$Transition, fix_transition)
+
+
+### Parse sequences and identify transitions: create a list of each transition for ### each trace where traces are in a list (list of lists)
+transitions_list_CT <- lapply(final_data$CT, function(sequence) {
+  codes <- strsplit(sequence, "-")[[1]]
+  # Create pairs of transitions
+  pairs <- paste(head(codes, -1), tail(codes, -1), sep = "->")
+  return(pairs)
+})
+
+### Vectorise transitions for each trace list of transitions
+transitions_CT <- unlist(transitions_list_CT)
+
+```
+
+The script shows the number of rows and columns in the dataset.
+The script also displays the number of unique tokens in the dataset.
+
+```{r}
+
+###Please note that an additional column had been added (concatenated traces)
+cat("The Dataset has", nrow(dataset), "rows and", ncol(dataset) - 1, "columns. The first column contains a unique trace ID.\n")
+cat("\nThe Dataset has", nrow(token_counts), "unique tokens.\n")
+
+```
+
+The following script generates a styled HTML table of token counts.
+
+```{r}
+
+library(kableExtra)
+
+# Generate the table
+token_table <- knitr::kable(token_counts, "html") %>%
+  kable_styling(full_width = FALSE)
+
+# Add column and row groups
+token_table <- kableExtra::column_spec(token_table, 1, width = "30%") %>%
+               kableExtra::collapse_rows(columns = 1, valign = "top", latex_hline = "full")
+
+# Output the table
+token_table
+
+```
+
+The following code block visualizes token frequency data.
+
+```{r}
+
+library(ggplot2)
+library(scales)
+library(forcats)
+
+max_count <- max(token_counts$Count)
+
+ggplot(token_counts, aes(x=Tokens, y=Count)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  theme_minimal() +
+  labs(title="Token Frequency", x="Tokens", y="Count") +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1)
+  ) +
+  scale_y_continuous(labels = comma, limits=c(0, max_count * 1.2))
+
+token_counts %>% mutate(name = fct_reorder(Tokens, Count)) %>% 
+  ggplot(aes(x=name, y=Count)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  theme_minimal() +
+  labs(title="Token Frequency", x="Tokens", y="Count") +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1)
+  ) + coord_flip() +
+  scale_y_continuous(labels = comma, limits=c(0, max_count * 1.2))
+
+threshold <- .0001 * max_count
+
+token_counts %>% filter(Count >= threshold)  %>%  mutate(name = fct_reorder(Tokens, Count)) %>%
+  ggplot(aes(x=name, y=Count)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  theme_minimal() +
+  labs(title="Token Frequency at 0.01% Threshold of Max Token Count", x="Tokens", y="Count") +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1)
+  ) +  coord_flip() +
+  scale_y_continuous(labels = comma, limits=c(0, max_count * 1.2))
+
+
+```
+The following code block visualizes token frequency data for condensed dataset.
+The condensed dataset reformats the original data such that traces do not have repeated tokens consecutively (e.g., "A-A-A-A-B-B-B-C-C" becomes "A-B-C")
+
+```{r}
+
+max_count_CT <- max(Token_frequencies_CT$Freq)
+
+ggplot(Token_frequencies_CT, aes(x=Tokens_CT, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  geom_text(aes(label=scales::comma(Freq)), vjust=-0.1, angle=45, fontface="bold", color="black", size=3.5,nudge_x=0.15) +
+  theme_minimal() +
+  labs(title="Token Frequency (Condensed Traces)", x="Tokens", y="Count") +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1)
+  ) +
+  scale_y_continuous(labels = comma, limits=c(0, max_count_CT * 1.2))
+
+Token_frequencies_CT %>% mutate(name = fct_reorder(Tokens_CT, Freq)) %>% 
+  ggplot(aes(x=name, y=Freq)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  theme_minimal() +
+  labs(title="Token Frequency (Condensed Traces)", x="Tokens", y="Count") +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1)
+  ) + coord_flip() +
+  scale_y_continuous(labels = comma, limits=c(0, max_count_CT * 1.2))
+
+
+
+```
+
+This code block creates two visualizations for the distribution of Trace_Length in the condensed dataset. The condensed dataset reformats the original data such that traces do not have repeated tokens consecutively (e.g., "A-A-A-A-B-B-B-C-C" becomes "A-B-C")
+
+```{r}
+
+ggplot(final_data, aes(x = "", y = CT_Length)) +
+  geom_violin(trim = FALSE, fill = "skyblue") +
+  geom_boxplot(width = 0.1, fill = "white", color = "black", outlier.shape = NA) +  # Add internal boxplot
+  labs(title = "Distribution of Condensed Trace Length",
+       y = "Trace Length",
+       x = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  coord_flip()
+
+ggplot(final_data, aes(x = CT_Length)) +
+  geom_histogram(binwidth = 1, fill = "lightcoral") +
+  labs(title = "Distribution of Condensed Trace Length",
+       x = "Condensed Trace Length",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 12, face = "bold"),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  )
+
+```
+
+This code block creates two visualizations for the distribution of Trace Length.
+
+```{r}
+
+ggplot(final_data, aes(x = "", y = Trace_Length)) +
+  geom_violin(trim = FALSE, fill = "skyblue") +
+  geom_boxplot(width = 0.1, fill = "white", color = "black", outlier.shape = NA) +  # Add internal boxplot
+  labs(title = "Distribution of Trace Length",
+       y = "Trace Length",
+       x = "") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  coord_flip()
+
+ggplot(final_data, aes(x = Trace_Length)) +
+  geom_histogram(bins = 20, fill = "skyblue", color = "black") +  # Adjust the number of bins as needed
+  labs(title = "Histogram of Trace Length",
+       x = "Trace Length",
+       y = "Count") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 12, face = "bold"),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  )
+
+```
+
+The following code block generates a table of subsequences of traces based on a user-specified length for traces in a condensed dataset.
+
+
+```{r}
+
+# Sub-sequences 
+generate_subsequences <- function(sequence, subseq_length) {
+  codes <- unlist(strsplit(sequence, "-"))
+  num_codes <- length(codes)
+  subsequences <- character(0)
+  
+  if(num_codes >= subseq_length) {
+    for(i in 1:(num_codes - subseq_length + 1)) {
+      subsequences <- c(subsequences, paste(codes[i:(i + subseq_length - 1)], collapse = "-"))
+    }
+  }
+  
+  return(subsequences)
+}
+
+# Request user input for the subsequence length
+cat("Please enter the subsequence length (within Condense Trace): ")
+subseq_length <- as.integer(readline())
+
+# Validate input
+if(is.na(subseq_length) || subseq_length <= 0) {
+  stop("Invalid input: subsequence length must be a positive integer.")
+}
+
+all_subsequences <- unlist(lapply(final_data$CT, generate_subsequences, subseq_length = subseq_length))
+subsequence_counts <- table(all_subsequences)
+subsequence_df <- as.data.frame(subsequence_counts, stringsAsFactors = FALSE) %>%
+  rename(Subsequence = all_subsequences, Frequency = Freq) %>%
+  arrange(desc(Frequency))
+
+# Print the table using kable
+kable(subsequence_df, format = "html", caption = "Frequency of Subsequences")
+```
+
+
+The following code block generates a table of subsequences of traces based on a user-specified length for traces in a dataset.
+
+```{r}
+
+# Request user input for the subsequence length
+cat("Please enter the subsequence length : ")
+ss_length <- as.integer(readline())
+
+# Validate input
+if(is.na(ss_length) || ss_length <= 0) {
+  stop("Invalid input: subsequence length must be a positive integer.")
+}
+
+all_ss <- unlist(lapply(final_data$Traces, generate_subsequences, subseq_length = ss_length))
+
+ss_counts <- table(all_ss)
+
+ss_df <- as.data.frame(ss_counts, stringsAsFactors = FALSE) %>%
+  rename(Subsequence = all_ss, Frequency = Freq) %>%
+  arrange(desc(Frequency))
+
+# Print the table using kable
+kable(ss_df, format = "html", caption = "Frequency of Subsequences")
+
+
+```
+
