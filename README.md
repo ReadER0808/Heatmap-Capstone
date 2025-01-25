@@ -16,7 +16,7 @@ The Heatmap Capstone Project showcases the development of a comprehensive set of
 ## Project Context
 The client provided a dataset with masked event sequences, containing no domain-specific information about the events or their relationships. This posed unique challenges:
 - **No domain knowledge**: Tokens were symbolic, and their meaning was unknown.
-- **Complexity**: The dataset included over 12,000 traces and millions of records.
+- **Complexity**: The dataset included over 12,000 traces.
 - **Objective**: Develop proof-of-concept tools to analyze and interpret the data for potential future applications.
 
 ### Dataset Details:
